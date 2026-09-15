@@ -32,7 +32,7 @@ class EDStationServicesInShip:
         self.passenger_lounge = PassengerLounge(self, self.ap, None, self.keys, self.screen, self.ap_ckb)
         self.commodities_market = CommoditiesMarket(self, self.ap, None, self.keys, self.screen, self.ap_ckb)
         self.status_parser = StatusParser(stop_event=self.ap.stop_event)
-        self.market_parser = MarketParser()
+        self.market_parser = MarketParser(stop_event=self.ap.stop_event)
         # The rect is top left x, y, and bottom right x, y in fraction of screen resolution
         self.reg = {'commodities_market': {'rect': [0.0, 0.0, 0.25, 0.25]},
                     'station_services': {'rect': [0.10, 0.10, 0.90, 0.85]},
@@ -218,7 +218,7 @@ class CommoditiesMarket:
         self.screen = screen
         self.ap_ckb = cb
 
-        self.market_parser = MarketParser()
+        self.market_parser = MarketParser(stop_event=self.ap.stop_event)
         # The reg rect is top left x, y, and bottom right x, y in fraction of screen resolution at 1920x1080
         self.reg = {'cargo_col': {'rect': [0.13, 0.227, 0.19, 0.90]},
                     'commodity_name_col': {'rect': [0.19, 0.227, 0.41, 0.90]},

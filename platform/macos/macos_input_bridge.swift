@@ -61,7 +61,7 @@ private let macKeyCode: [Int: CGKeyCode] = [
     210: 114, 211: 117
 ]
 
-private var heldFlags: CGEventFlags = []
+private var heldPID: pid_t?
 private var heldKeyCodes: [Int: CGKeyCode] = [:]
 private let modifierFlags: [Int: CGEventFlags] = [
     29: .maskControl, 157: .maskControl, 42: .maskShift, 54: .maskShift,
@@ -79,21 +79,21 @@ private func error(_ message: String) { reply(["ok": false, "error": message]) }
 @discardableResult
 private func releaseAllHeldKeys() -> Bool {
     let keys = Set(heldKeyCodes.values)
+    let destination = heldPID
     heldKeyCodes.removeAll()
-    heldFlags = []
+    heldPID = nil
 
-    // Cleanup must remain quick when Elite has already closed. Clear our
-    // bookkeeping regardless, and post key-up events only when its window and
-    // existing event permission are immediately available.
-    guard !keys.isEmpty,
-          let window = eliteWindow(waitingUpTo: 0),
+    // Releases belong to the original process, even when its window is hidden
+    // or replaced. Never redirect cleanup to a newly discovered window.
+    guard !keys.isEmpty, let pid = destination,
+          let app = NSRunningApplication(processIdentifier: pid), !app.isTerminated,
           CGPreflightPostEventAccess() else { return false }
     for keyCode in keys {
         guard let event = CGEvent(
                 keyboardEventSource: nil, virtualKey: keyCode, keyDown: false) else { continue }
         event.flags = []
         event.setIntegerValueField(.keyboardEventKeyboardType, value: 41)
-        event.postToPid(window.pid)
+        event.postToPid(pid)
     }
     return true
 }
@@ -128,13 +128,34 @@ while let line = readLine() {
             error("Unsupported DirectInput scan code \(request["scanCode"] ?? "nil")")
             continue
         }
-        var eventFlags = heldFlags
-        if let flag = modifierFlags[scanCode] {
-            if down { eventFlags.insert(flag) } else { eventFlags.remove(flag) }
+        let destination: pid_t
+        if down {
+            guard let window = eliteWindow() else {
+                error("Could not find visible Elite window named '\(wantedTitle)'")
+                continue
+            }
+            if let pid = heldPID, pid != window.pid {
+                releaseAllHeldKeys()
+            }
+            destination = window.pid
+        } else {
+            guard heldKeyCodes[scanCode] != nil, let pid = heldPID else {
+                reply(["ok": true])
+                continue
+            }
+            guard let app = NSRunningApplication(processIdentifier: pid), !app.isTerminated else {
+                releaseAllHeldKeys()
+                reply(["ok": true])
+                continue
+            }
+            destination = pid
         }
-        guard let window = eliteWindow() else {
-            error("Could not find visible Elite window named '\(wantedTitle)'")
-            continue
+        var nextKeys = heldKeyCodes
+        if down { nextKeys[scanCode] = keyCode } else { nextKeys.removeValue(forKey: scanCode) }
+        // Releasing one Shift/Control/Alt must preserve the other held side.
+        var eventFlags: CGEventFlags = []
+        for scan in nextKeys.keys {
+            if let flag = modifierFlags[scan] { eventFlags.formUnion(flag) }
         }
         guard CGPreflightPostEventAccess() || CGRequestPostEventAccess() else {
             error("Accessibility permission is required to send input to Elite")
@@ -146,14 +167,10 @@ while let line = readLine() {
         }
         event.flags = eventFlags
         event.setIntegerValueField(.keyboardEventKeyboardType, value: 41)
-        event.postToPid(window.pid)
-        heldFlags = eventFlags
-        if down {
-            heldKeyCodes[scanCode] = keyCode
-        } else {
-            heldKeyCodes.removeValue(forKey: scanCode)
-        }
-        reply(["ok": true, "pid": window.pid, "keyCode": keyCode])
+        event.postToPid(destination)
+        heldKeyCodes = nextKeys
+        heldPID = nextKeys.isEmpty ? nil : destination
+        reply(["ok": true, "pid": destination, "keyCode": keyCode])
         continue
     }
     guard let window = eliteWindow() else {
@@ -184,3 +201,6 @@ while let line = readLine() {
     }
     error("Unknown operation '\(op)'")
 }
+
+// Parent death closes stdin too; it must have the same cleanup as quit.
+releaseAllHeldKeys()

@@ -25,21 +25,23 @@ if sys.platform == "win32":
         for chord, (callback, args) in bindings.items():
             add_hotkey(chord, callback, args=args)
 else:
-    _lock = threading.Lock()
+    _lock = threading.RLock()
     _callbacks = {}
     _legacy_bindings = {}
     _process = None
 
-    def _reader(process, ready_event, startup):
+    def _reader(process, ready_event, startup, callbacks):
         try:
             for line in process.stdout:
                 try:
                     event = json.loads(line)
+                    if not isinstance(event, dict):
+                        continue
                     if event.get("ready"):
                         startup["ready"] = True
                         ready_event.set()
                         continue
-                    callback = _callbacks.get(event.get("id"))
+                    callback = callbacks.get(event.get("id")) if _process is process else None
                     if callback:
                         try:
                             callback()
@@ -48,11 +50,17 @@ else:
                 except (json.JSONDecodeError, RuntimeError):
                     continue
         finally:
+            process.stdout.close()
             ready_event.set()
 
     def configure(bindings):
+        with _lock:
+            _configure(bindings)
+
+    def _configure(bindings):
         global _process, _callbacks
         remove_all_hotkeys()
+        _legacy_bindings.update(bindings)
         if not bindings:
             return
         helper = Path(os.environ.get(
@@ -74,7 +82,7 @@ else:
             ready_event = threading.Event()
             startup = {"ready": False}
             threading.Thread(
-                target=_reader, args=(_process, ready_event, startup),
+                target=_reader, args=(_process, ready_event, startup, callbacks),
                 name="EDAP-Hotkeys", daemon=True).start()
 
         ready_event.wait(timeout=1.0)
@@ -88,17 +96,24 @@ else:
                 f"Native hotkey helper failed to start (exit status {code})")
 
     def add_hotkey(chord, callback, args=()):
-        _legacy_bindings[chord] = (callback, args)
-        configure(dict(_legacy_bindings))
+        with _lock:
+            bindings = {**_legacy_bindings, chord: (callback, args)}
+            configure(bindings)
 
     def remove_all_hotkeys():
         global _process, _callbacks
         with _lock:
             process, _process = _process, None
             _callbacks = {}
-        if process is not None and process.poll() is None:
-            process.terminate()
-            try:
-                process.wait(timeout=1)
-            except subprocess.TimeoutExpired:
-                process.kill()
+            _legacy_bindings.clear()
+            if process is not None:
+                process.stdin.close()
+                if process.poll() is None:
+                    process.terminate()
+                try:
+                    process.wait(timeout=1)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=0.5)
+                # The reader owns stdout and closes it after EOF; closing it
+                # from here could block behind its pending readline.

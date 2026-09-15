@@ -1,4 +1,5 @@
 from __future__ import annotations
+from JSONSnapshot import read_json_snapshot
 
 import json
 import os
@@ -52,7 +53,7 @@ class NavRouteParser:
         if self.stop_event is None:
             sleep(seconds)
 
-    def get_nav_route_data(self):
+    def get_nav_route_data(self, timeout=2.0):
         """Loads data from the JSON file and returns the data, or None if the file does not exist.
         The first entry is the starting system.
         When there is a route:
@@ -77,27 +78,19 @@ class NavRouteParser:
         if not os.path.exists(self.file_path):
             return None
 
-        # Check if file changed
-        if self.get_file_modified_time() == self.last_mod_time:
-            #logger.debug(f'NavRoute.json mod timestamp {self.last_mod_time} unchanged.')
-            return self.current_data
-
-        # Read file
-        backoff = 1
-        while True:
-            try:
-                with open(self.file_path, 'r', encoding='utf-8') as file:
-                    data = json.load(file)
-                    break
-            except Exception as e:
-                logger.debug('An error occurred reading NavRoute.json file. File may be open.')
-                self._poll_wait(backoff)
-                logger.debug('Attempting to re-read NavRoute.json file after delay.')
-                backoff = min(backoff * 2, 1.0)
+        # An unchanged snapshot can be reused. Deletion during the check is
+        # handled by the same bounded reader as a partial rewrite.
+        try:
+            if self.get_file_modified_time() == self.last_mod_time:
+                return self.current_data
+        except OSError:
+            pass
+        data, modified = read_json_snapshot(
+            self.file_path, timeout=timeout, stop_event=self.stop_event)
 
         # Store data
         self.current_data = data
-        self.last_mod_time = self.get_file_modified_time()
+        self.last_mod_time = modified
         #logger.debug(f'NavRoute.json mod timestamp {self.last_mod_time} updated.')
         # print(json.dumps(data, indent=4))
         return data
@@ -114,7 +107,7 @@ class NavRouteParser:
         if self.current_data['event'] == "NavRouteClear":
             return ''
 
-        if self.current_data['Route'] is None:
+        if not self.current_data.get('Route'):
             return ''
 
         # Find last system in route

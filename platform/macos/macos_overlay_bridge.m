@@ -1,4 +1,5 @@
 #import <AppKit/AppKit.h>
+#import <unistd.h>
 
 @interface EDAPOverlayView : NSView
 @property(nonatomic, strong) NSDictionary *state;
@@ -94,6 +95,7 @@ static NSColor *EDAPColor(NSArray *rgb) {
 @end
 
 static EDAPOverlayController *EDAPOverlayControllerInstance;
+static dispatch_source_t launcherMonitor;
 
 @implementation EDAPOverlayController
 - (instancetype)initWithPath:(NSString *)path {
@@ -148,14 +150,9 @@ static EDAPOverlayController *EDAPOverlayControllerInstance;
         CGFloat top = [target[1] doubleValue];
         CGFloat width = [target[2] doubleValue];
         CGFloat height = [target[3] doubleValue];
-        NSScreen *chosen = NSScreen.mainScreen;
-        for (NSScreen *screen in NSScreen.screens) {
-            if (NSPointInRect(NSMakePoint(x + width / 2.0, NSMidY(screen.frame)), screen.frame)) {
-                chosen = screen;
-                break;
-            }
-        }
-        CGFloat cocoaY = NSMaxY(chosen.frame) - top - height;
+        // CG global coordinates use the primary display's top-left origin;
+        // AppKit uses that same display's bottom-left, even for other screens.
+        CGFloat cocoaY = NSMaxY(NSScreen.screens.firstObject.frame) - top - height;
         NSRect frame = NSMakeRect(x, cocoaY, width, height);
         if (!NSEqualRects(self.window.frame, frame)) {
             [self.window setFrame:frame display:NO];
@@ -170,6 +167,12 @@ static EDAPOverlayController *EDAPOverlayControllerInstance;
 int main(int argc, const char *argv[]) {
     @autoreleasepool {
         if (argc != 2) return 2;
+        pid_t launcherPID = getppid();
+        if (launcherPID <= 1) return 0;
+        launcherMonitor = dispatch_source_create(
+            DISPATCH_SOURCE_TYPE_PROC, launcherPID, DISPATCH_PROC_EXIT, dispatch_get_main_queue());
+        dispatch_source_set_event_handler(launcherMonitor, ^{ [NSApp terminate:nil]; });
+        dispatch_resume(launcherMonitor);
         NSApplication *application = NSApplication.sharedApplication;
         [application setActivationPolicy:NSApplicationActivationPolicyAccessory];
         EDAPOverlayControllerInstance = [[EDAPOverlayController alloc]

@@ -4,6 +4,7 @@ import os
 import struct
 import sys
 import time
+import threading
 import typing
 from copy import copy
 
@@ -110,6 +111,8 @@ class Screen:
         self._last_capture_warn_ts = 0.0
         self._capture_warn_interval = 5.0  # seconds between repeated warnings
         self._capture_failure_count = 0
+        self._bridge_lock = threading.RLock()
+        self._closed = False
         self._bridge_file = None
         self._bridge_map = None
         self._bridge_path = os.environ.get("EDAP_CAPTURE_FILE")
@@ -180,9 +183,10 @@ class Screen:
         try:
             with open(self._bridge_path, "rb") as bridge_file:
                 header = bridge_file.read(BRIDGE_HEADER.size)
+                file_size = os.fstat(bridge_file.fileno()).st_size
             sequence, width, height = BRIDGE_HEADER.unpack(header)
-            if not width or not height:
-                raise ValueError("capture bridge reported an empty frame size")
+            if not width or not height or file_size != BRIDGE_HEADER.size + width * height * 4:
+                raise ValueError("capture bridge dimensions do not match its file size")
         except (OSError, ValueError, struct.error) as exc:
             raise RuntimeError(
                 f"Native Elite capture is not ready at '{self._bridge_path}': {exc}") from exc
@@ -350,6 +354,12 @@ class Screen:
 
     def _get_bridge_region(self, x_left, y_top, x_right, y_bot):
         """Read a consistent BGRA rectangle from the macOS capture bridge."""
+        with self._bridge_lock:
+            if self._closed:
+                return None
+            return self._read_bridge_region(x_left, y_top, x_right, y_bot)
+
+    def _read_bridge_region(self, x_left, y_top, x_right, y_bot):
         if not self._bridge_path:
             return None
 
@@ -361,6 +371,9 @@ class Screen:
             for _ in range(3):
                 first = self._bridge_map[:BRIDGE_HEADER.size]
                 sequence, width, height = BRIDGE_HEADER.unpack(first)
+                if (width, height) != (self.screen_width, self.screen_height) or (
+                        len(self._bridge_map) != BRIDGE_HEADER.size + width * height * 4):
+                    raise ValueError("capture frame dimensions changed or file is incomplete")
                 if sequence == 0 or sequence & 1:
                     time.sleep(0.002)
                     continue
@@ -415,10 +428,12 @@ class Screen:
 
     def close(self):
         """Release capture resources during a normal GUI shutdown."""
-        self._close_bridge()
-        if self.mss is not None:
-            self.mss.close()
-            self.mss = None
+        with self._bridge_lock:
+            self._closed = True
+            self._close_bridge()
+            if self.mss is not None:
+                self.mss.close()
+                self.mss = None
         
     def get_screen_rect_pct(self, rect):
         """ Grabs a screenshot and returns the selected region as an image.

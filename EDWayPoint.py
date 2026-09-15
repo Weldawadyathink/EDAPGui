@@ -51,8 +51,8 @@ class EDWayPoint:
         # print("waypoints: "+str(self.waypoints))
 
         # self.mouse = MousePoint()
-        self.market_parser = MarketParser()
-        self.cargo_parser = CargoParser()
+        self.market_parser = MarketParser(stop_event=self.ap.stop_event)
+        self.cargo_parser = CargoParser(stop_event=self.ap.stop_event)
 
     def load_waypoint_file(self, filename='./waypoints/waypoints.json') -> bool:
         if not os.path.exists(filename):

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import threading
+from functools import wraps
 from os import listdir
 import os
 from os.path import getmtime, isfile, join
@@ -21,6 +23,20 @@ Description:  Pulls the keybindings for specific controls from the ED Key Bindin
 
 Constraints:  This file will use the latest modified *.binds file
 """
+
+
+# Multiple assists and GUI workers share one keyboard destination. Serialize
+# whole chords/text so another command cannot inherit a half-pressed modifier.
+# Emergency release deliberately does not acquire this lock.
+_input_lock = threading.RLock()
+
+
+def serialized_input(method):
+    @wraps(method)
+    def run(self, *args, **kwargs):
+        with _input_lock:
+            return method(self, *args, **kwargs)
+    return run
 
 
 @final
@@ -283,6 +299,7 @@ class EDKeys:
         logger.info(f'Latest keybindings file (active preset unavailable):{latest_bindings}')
         return latest_bindings
 
+    @serialized_input
     def send_key(self, type, key):
         self._raise_if_stop_requested()
         # Focus Elite window if configured
@@ -295,6 +312,7 @@ class EDKeys:
         else:
             PressKey(key)
 
+    @serialized_input
     def type_text(self, value, interval=0.05):
         """Type printable text through the same hardware-key path as controls."""
         char_keys = {
@@ -318,17 +336,27 @@ class EDKeys:
                 logger.warning(f"Cannot type unsupported character {char!r}")
                 continue
             needs_shift = char.isupper() or char in shifted
-            if needs_shift:
-                PressKey(SCANCODE['Key_LeftShift'])
-                self._interruptible_sleep(self.key_mod_delay)
-            PressKey(SCANCODE[key_name])
-            self._interruptible_sleep(0.02)
-            ReleaseKey(SCANCODE[key_name])
-            if needs_shift:
-                self._interruptible_sleep(self.key_mod_delay)
-                ReleaseKey(SCANCODE['Key_LeftShift'])
+            key_released = False
+            try:
+                if needs_shift:
+                    PressKey(SCANCODE['Key_LeftShift'])
+                    self._interruptible_sleep(self.key_mod_delay)
+                PressKey(SCANCODE[key_name])
+                self._interruptible_sleep(0.02)
+                ReleaseKey(SCANCODE[key_name])
+                key_released = True
+                if needs_shift:
+                    self._interruptible_sleep(self.key_mod_delay)
+            finally:
+                # Preserve normal modifier timing, but release immediately on
+                # interruption or failure anywhere in the text chord.
+                if not key_released:
+                    ReleaseKey(SCANCODE[key_name])
+                if needs_shift:
+                    ReleaseKey(SCANCODE['Key_LeftShift'])
             self._interruptible_sleep(interval)
 
+    @serialized_input
     def send(self, key_binding, hold=None, repeat=1, repeat_delay=None, state=None):
         """ Send a key based on the defined keybind
         @param key_binding: The key bind name (i.e. UseBoostJuice).

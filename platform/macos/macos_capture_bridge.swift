@@ -22,8 +22,8 @@ private struct Arguments {
         }
 
         guard let output = value(after: "--output"),
-              let widthText = value(after: "--width"), let width = Int(widthText), width > 0,
-              let heightText = value(after: "--height"), let height = Int(heightText), height > 0,
+              let widthText = value(after: "--width"), let width = Int(widthText), (1...16384).contains(width),
+              let heightText = value(after: "--height"), let height = Int(heightText), (1...16384).contains(height),
               let fpsText = value(after: "--fps"), let fps = Int32(fpsText), fps > 0 else {
             return nil
         }
@@ -88,6 +88,10 @@ private final class SharedFrameWriter: NSObject, SCStreamOutput {
                 of outputType: SCStreamOutputType) {
         guard outputType == .screen,
               sampleBuffer.isValid,
+              let attachments = CMSampleBufferGetSampleAttachmentsArray(
+                sampleBuffer, createIfNecessary: false) as? [[SCStreamFrameInfo: Any]],
+              let status = attachments.first?[.status] as? Int,
+              status == SCFrameStatus.complete.rawValue,
               let imageBuffer = sampleBuffer.imageBuffer,
               CVPixelBufferGetWidth(imageBuffer) == width,
               CVPixelBufferGetHeight(imageBuffer) == height else { return }
@@ -98,6 +102,7 @@ private final class SharedFrameWriter: NSObject, SCStreamOutput {
 
         sequence &+= 2
         writeHeader(sequence: sequence - 1)
+        OSMemoryBarrier()
 
         let sourceStride = CVPixelBufferGetBytesPerRow(imageBuffer)
         let destinationStride = width * 4
@@ -131,6 +136,14 @@ guard let arguments = Arguments() else {
     fail("usage: macos_capture_bridge --output PATH --width N --height N --fps N [--window-title TITLE]", code: 2)
 }
 
+// Keep the capture stream owned by its launching shell, including SIGKILL.
+let launcherPID = getppid()
+guard launcherPID > 1 else { fail("launcher exited before capture startup", code: 78) }
+let launcherMonitor = DispatchSource.makeProcessSource(
+    identifier: launcherPID, eventMask: .exit, queue: .main)
+launcherMonitor.setEventHandler { exit(0) }
+launcherMonitor.resume()
+
 guard CGPreflightScreenCaptureAccess() || CGRequestScreenCaptureAccess() else {
     fail("Screen Recording permission is required. Enable it for EDAPGui (or the launching terminal) in System Settings > Privacy & Security > Screen & System Audio Recording, then relaunch EDAPGui.", code: 77)
 }
@@ -143,7 +156,9 @@ SCShareableContent.getExcludingDesktopWindows(false, onScreenWindowsOnly: false)
     contentError = error
     contentSemaphore.signal()
 }
-contentSemaphore.wait()
+guard contentSemaphore.wait(timeout: .now() + 5) == .success else {
+    fail("timed out enumerating capturable displays")
+}
 
 if let contentError {
     fail("could not enumerate displays: \(contentError.localizedDescription)")
@@ -180,7 +195,7 @@ var eliteWindowMonitor: DispatchSourceTimer?
 if let wantedTitle = arguments.windowTitle {
     let needle = wantedTitle.lowercased()
     guard let window = availableContent?.windows.first(where: {
-        ($0.title ?? "").lowercased().contains(needle)
+        $0.isOnScreen && ($0.title ?? "").lowercased().contains(needle)
     }) else {
         fail("could not find a capturable Elite window named '\(wantedTitle)'")
     }
@@ -223,12 +238,21 @@ if let wantedTitle = arguments.windowTitle {
         let windows = CGWindowListCopyWindowInfo(
             [.optionAll, .excludeDesktopElements], kCGNullWindowID)
             as? [[String: Any]] ?? []
-        let found = windows.contains { item in
+        let currentWindow = windows.first { item in
             let title = item[kCGWindowName as String] as? String ?? ""
             let pid = (item[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value
             return pid == application.processID && title.lowercased().contains(needle)
         }
-        missedWindowChecks = found ? 0 : missedWindowChecks + 1
+        if let currentWindow,
+           (currentWindow[kCGWindowIsOnscreen as String] as? Bool) == true,
+           let bounds = currentWindow[kCGWindowBounds as String] as? [String: Any],
+           let frame = CGRect(dictionaryRepresentation: bounds as CFDictionary),
+           frame != window.frame {
+            // This application-filter stream has a fixed crop. Fail closed
+            // rather than silently steer using a different part of the display.
+            fail("Elite window moved or resized; relaunch EDAPGui to recapture its frame.", code: 79)
+        }
+        missedWindowChecks = currentWindow != nil ? 0 : missedWindowChecks + 1
         if missedWindowChecks >= 4 {
             fail("Elite window closed; stopping EDAPGui.", code: 78)
         }
@@ -261,7 +285,9 @@ stream.startCapture { error in
     startError = error
     startSemaphore.signal()
 }
-startSemaphore.wait()
+guard startSemaphore.wait(timeout: .now() + 5) == .success else {
+    fail("timed out starting screen capture")
+}
 if let startError {
     fail("could not start screen capture: \(startError.localizedDescription)")
 }

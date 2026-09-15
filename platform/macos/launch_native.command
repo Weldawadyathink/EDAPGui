@@ -34,17 +34,16 @@ show_launch_failure() {
 }
 
 mkdir -p "$RUNTIME_DIR"
-if ! mkdir "$LOCK_DIR" 2>/dev/null; then
-  lock_pid=""
-  [[ -f "$LOCK_DIR/pid" ]] && read -r lock_pid <"$LOCK_DIR/pid"
-  if [[ -n "$lock_pid" ]] && kill -0 "$lock_pid" 2>/dev/null; then
-    print -r -- "EDAPGui is already running (launcher PID $lock_pid)." >>"$LOG_FILE"
-    exit 0
-  fi
-  rm -f "$LOCK_DIR/pid"
-  rmdir "$LOCK_DIR" 2>/dev/null || true
-  mkdir "$LOCK_DIR"
+# Hold an OS lock before touching the diagnostic directory. A mkdir-only lock
+# can be stolen between creation and publishing its PID. The lock file must
+# remain in place: unlinking it would let contenders lock different inodes.
+zmodload zsh/system
+: >>"$RUNTIME_DIR/launcher.flock"
+if ! zsystem flock -t 0 -f launcher_lock_fd "$RUNTIME_DIR/launcher.flock"; then
+  print -r -- "EDAPGui is already running." >>"$LOG_FILE"
+  exit 0
 fi
+mkdir -p "$LOCK_DIR"
 print -r -- "$$" >"$LOCK_DIR/pid"
 
 capture_pid=""
@@ -87,8 +86,6 @@ for required in "$PYTHON_BIN" "$CAPTURE_BIN" "$OVERLAY_BIN" "$INPUT_BIN" "$HOTKE
   fi
 done
 
-pkill -TERM -f "[m]acos_capture_bridge.*${CAPTURE_FILE}" >/dev/null 2>&1 || true
-pkill -TERM -f "[m]acos_overlay_bridge.*${OVERLAY_FILE}" >/dev/null 2>&1 || true
 rm -f "$CAPTURE_FILE" "$OVERLAY_FILE" "$OVERLAY_FILE.tmp"
 
 "$OVERLAY_BIN" "$OVERLAY_FILE" >>"$LOG_FILE" 2>&1 &
@@ -108,10 +105,12 @@ for _ in {1..80}; do
     capture_error=$(tail -n 1 "$LOG_FILE" 2>/dev/null || true)
     [[ -z "$capture_error" ]] && capture_error="The native capture helper exited before producing a frame. See $LOG_FILE"
     show_launch_failure "$capture_error"
+    capture_pid=""
+    [[ "$capture_status" -eq 0 ]] && capture_status=1
     exit "$capture_status"
   fi
   sequence=$(od -An -tu8 -N8 "$CAPTURE_FILE" 2>/dev/null | tr -d ' ' || true)
-  if [[ -n "$sequence" && "$sequence" -gt 0 ]]; then
+  if [[ -n "$sequence" && "$sequence" -gt 0 && $(( sequence % 2 )) -eq 0 ]]; then
     capture_ready=1
     break
   fi
@@ -159,9 +158,10 @@ while kill -0 "$python_pid" >/dev/null 2>&1; do
       show_launch_failure "$capture_error"
     fi
     kill "$python_pid" >/dev/null 2>&1 || true
-    wait "$python_pid" 2>/dev/null || true
+    wait_for_child_exit "$python_pid"
     python_pid=""
     [[ "$capture_status" -eq 78 ]] && exit 0
+    [[ "$capture_status" -eq 0 ]] && capture_status=1
     exit "$capture_status"
   fi
   sleep 0.25

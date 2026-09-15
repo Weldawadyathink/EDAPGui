@@ -281,6 +281,14 @@ class Overlay:
         win32gui.PostMessage(self.hWindow, win32con.WM_CLOSE, 0, 0)
 
     def _write_native_state(self, quit_requested=False):
+        # Serialize the entire publish, including replace of the shared temp
+        # file. Once shutdown is requested, no painter may overwrite it.
+        with overlay_state_lock:
+            if self._cleanup_stop.is_set() and not quit_requested:
+                return
+            self._publish_native_state(quit_requested)
+
+    def _publish_native_state(self, quit_requested=False):
         """Atomically publish overlay state for the native renderer."""
         if not self.native_path:
             return

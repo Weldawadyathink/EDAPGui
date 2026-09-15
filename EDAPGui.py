@@ -122,6 +122,7 @@ class APGui:
         self._background_tasks = {}
         self._pending_background_tasks = {}
         self._closing = False
+        self._command_epoch = 0
         root.title("EDAutopilot " + EDAP_VERSION)
         # root.overrideredirect(True)
         # root.geometry("400x550")
@@ -312,12 +313,18 @@ class APGui:
         """Marshal every worker/hotkey callback onto Tk's main thread."""
         if self._closing:
             return
+        if msg in ('fsd_start', 'sc_start', 'waypoint_start', 'robigo_start', 'dss_start'):
+            body = (getattr(self, '_command_epoch', 0), body)
         if self.gui_loaded and threading.get_ident() == self._main_thread_id:
             self._dispatch_callback(msg, body)
         else:
             self._ui_queue.put((msg, body))
 
     def _dispatch_callback(self, msg, body=None):
+        if msg in ('fsd_start', 'sc_start', 'waypoint_start', 'robigo_start', 'dss_start'):
+            epoch, body = body
+            if epoch != getattr(self, '_command_epoch', 0):
+                return
         if msg == '_render_log':
             self.msgList.insert(tk.END, body)
             self.msgList.yview(tk.END)
@@ -460,6 +467,8 @@ class APGui:
     def _start_background_task(
             self, name, target, announce=True, coalesce=False, clear_stop=False):
         """Run a blocking GUI command once, reporting failures in the UI log."""
+        if self._closing:
+            return False
         existing = self._background_tasks.get(name)
         if existing is not None and existing.is_alive():
             if coalesce:
@@ -494,6 +503,9 @@ class APGui:
             self.ed_ap.stop_event.clear()
         if announce:
             self.log_msg(f"{name.title()} started")
+        stop_event = getattr(getattr(self, 'ed_ap', None), 'stop_event', None)
+        if hasattr(stop_event, 'wrap'):
+            runner = stop_event.wrap(runner)
         task = threading.Thread(target=runner, name=f"EDAP-{name}", daemon=True)
         self._background_tasks[name] = task
         task.start()
@@ -540,6 +552,7 @@ class APGui:
     # this routine is to stop any current autopilot activity
     def stop_all_assists(self):
         logger.debug("Entered: stop_all_assists")
+        self._command_epoch = getattr(self, '_command_epoch', 0) + 1
         self.log_msg("Stop requested")
         # Coalesced button commands represent user intent, but an explicit End
         # must take precedence over anything that has not started yet.

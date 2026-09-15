@@ -128,6 +128,8 @@ class MachLearn:
          for Target Model: 'target', 'target-occluded'.
         @return: A list of learning matches.
         """
+        if image is None or getattr(image, "size", 0) == 0:
+            return None
         results = None
         matches: list[MachLearnMatch] = []
         self.ap.raise_if_stop_requested()
@@ -136,6 +138,8 @@ class MachLearn:
                 matches = self._coreml_predict(model, image, class_name)
                 self.ap.raise_if_stop_requested()
                 return matches
+            except InterruptedError:
+                raise
             except Exception as exc:
                 self.ap_ckb('log', f"Core ML inference failed ({exc}); switching to CPU")
                 self.coreml_models = {}

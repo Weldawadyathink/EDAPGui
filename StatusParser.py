@@ -66,17 +66,21 @@ class StatusParser:
         @param start_timestamp: The initial timestamp from 'timestamp' value.
         @param timeout: Timeout in seconds.
         """
-        start_time = time.time()
-        while (time.time() - start_time) < timeout:
-            # Check file and read now data
-            self.get_cleaned_data()
-            # Check if internal timestamp changed
-            if self.current_data['timestamp'] != start_timestamp:
+        return self._wait_for(lambda data: data['timestamp'] != start_timestamp, timeout)
+
+    def _wait_for(self, predicate, timeout):
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            try:
+                data = self.get_cleaned_data(timeout=remaining)
+            except TimeoutError:
+                return False
+            if predicate(data):
                 return True
-
-            self._poll_wait()
-
-        return False
+            self._poll_wait(min(0.5, max(0, deadline - time.monotonic())))
 
     def translate_flags(self, flags_value):
         """Translates flags integer to a dictionary of only True flags."""
@@ -179,7 +183,7 @@ class StatusParser:
         # Format the datetime object back into a string
         return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    def get_cleaned_data(self):
+    def get_cleaned_data(self, timeout=2.0):
         """Loads data from the JSON file and returns cleaned data with only the necessary fields.
         {
         "timestamp":"2024-09-28T16:01:47Z",
@@ -205,33 +209,28 @@ class StatusParser:
             }
         }
         """
-        # Check if file changed
-        if self.get_file_modified_time() == self.last_mod_time:
-            #logger.debug(f'Status.json mod timestamp {self.last_mod_time} unchanged.')
-            #print(f'Status.json mod timestamp {self.last_mod_time} unchanged.')
-            return self.current_data
-
-        # Read file
-        attempt = 1
-        backoff = 0.1
+        # Elite rewrites this file in place. Bound retries so an unreadable or
+        # truncated file cannot hang startup or outlive the caller's wait.
+        deadline = time.monotonic() + timeout
+        backoff = 0.05
         while True:
-            if os.access(self.file_path, os.R_OK):
-                try:
-                    with open(self.file_path, 'r', encoding='utf-8') as file:
-                        data = json.load(file)
-                        if attempt > 2:
-                            logger.debug(f'Status.json read succeeded on attempt {attempt}.')
-                        break
-                except Exception as e:
-                    if attempt >= 2:
-                        logger.debug(f'An error occurred reading Status.json file (attempt {attempt}). File may be open.')
-                    self._poll_wait(backoff)
-                    backoff = min(backoff * 2, 1.0)
-                    attempt += 1
-            else:
-                self._poll_wait(backoff)
-                backoff = min(backoff * 2, 1.0)
-                attempt += 1
+            if self.stop_event is not None and self.stop_event.is_set():
+                raise InterruptedError("EDAP assist stop requested")
+            try:
+                modified = self.get_file_modified_time()
+                if modified == self.last_mod_time:
+                    return self.current_data
+                with open(self.file_path, 'r', encoding='utf-8') as file:
+                    data = json.load(file)
+                if not isinstance(data, dict) or 'timestamp' not in data or 'Flags' not in data:
+                    raise ValueError("Status.json is missing required fields")
+                break
+            except (OSError, ValueError) as exc:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError(f"Unable to read Status.json: {exc}") from exc
+                self._poll_wait(min(backoff, remaining))
+                backoff = min(backoff * 2, 0.5)
 
         # Combine flags from Flags and Flags2 into a single dictionary
         # combined_flags = {**self.translate_flags(data['Flags'])}
@@ -305,7 +304,9 @@ class StatusParser:
         # Store data
         self.last_data = self.current_data
         self.current_data = cleaned_data
-        self.last_mod_time = self.get_file_modified_time()
+        # Cache the timestamp observed BEFORE the read. A write during parsing
+        # must be picked up on the next call, not mistaken for cached data.
+        self.last_mod_time = modified
         # logger.debug(f'Status.json mod timestamp {self.last_mod_time} updated.')
         # print(f'Status.json mod timestamp {self.last_mod_time} updated.')
         # print(json.dumps(data, indent=4))
@@ -395,13 +396,7 @@ class StatusParser:
         @param timeout: Timeout in seconds.
         @param gui_focus_flag: The flag to check for.
         """
-        start_time = time.time()
-        while (time.time() - start_time) < timeout:
-            self.get_cleaned_data()
-            if self.current_data['GuiFocus'] == gui_focus_flag:
-                return True
-            self._poll_wait()
-        return False
+        return self._wait_for(lambda data: data['GuiFocus'] == gui_focus_flag, timeout)
 
     def wait_for_flag_on(self, flag: int, timeout: float = 15) -> bool:
         """ Waits for the of the selected flag to turn true.
@@ -410,15 +405,7 @@ class StatusParser:
         @param timeout: Timeout in seconds.
         @param flag: The flag to check for.
         """
-        start_time = time.time()
-        while (time.time() - start_time) < timeout:
-            self.get_cleaned_data()
-            if bool(self.current_data['Flags'] & flag):
-                return True
-
-            self._poll_wait()
-
-        return False
+        return self._wait_for(lambda data: bool(data['Flags'] & flag), timeout)
 
     def wait_for_flag_off(self, flag: int, timeout: float = 15) -> bool:
         """ Waits for the of the selected flag to turn false.
@@ -427,15 +414,7 @@ class StatusParser:
         @param timeout: Timeout in seconds.
         @param flag: The flag to check for.
         """
-        start_time = time.time()
-        while (time.time() - start_time) < timeout:
-            self.get_cleaned_data()
-            if not bool(self.current_data['Flags'] & flag):
-                return True
-
-            self._poll_wait()
-
-        return False
+        return self._wait_for(lambda data: not bool(data['Flags'] & flag), timeout)
 
     def wait_for_flag2_on(self, flag: int, timeout: float = 15) -> bool:
         """ Waits for the of the selected flag to turn true.
@@ -444,18 +423,7 @@ class StatusParser:
         @param timeout: Timeout in seconds.
         @param flag: The flag to check for.
         """
-        if 'Flags2' not in self.current_data:
-            return False
-
-        start_time = time.time()
-        while (time.time() - start_time) < timeout:
-            self.get_cleaned_data()
-            if bool(self.current_data['Flags2'] & flag):
-                return True
-
-            self._poll_wait()
-
-        return False
+        return self._wait_for(lambda data: bool((data.get('Flags2') or 0) & flag), timeout)
 
     def wait_for_flag2_off(self, flag: int, timeout: float = 15) -> bool:
         """ Waits for the of the selected flag to turn false.
@@ -464,18 +432,7 @@ class StatusParser:
         @param timeout: Timeout in seconds.
         @param flag: The flag to check for.
         """
-        if 'Flags2' not in self.current_data:
-            return False
-
-        start_time = time.time()
-        while (time.time() - start_time) < timeout:
-            self.get_cleaned_data()
-            if not bool(self.current_data['Flags2'] & flag):
-                return True
-
-            self._poll_wait()
-
-        return False
+        return self._wait_for(lambda data: not bool((data.get('Flags2') or 0) & flag), timeout)
 
     def get_flag(self, flag: int) -> bool:
         """ Gets the value of the selected flag.
@@ -494,7 +451,7 @@ class StatusParser:
 
         if 'Flags2' in self.current_data:
             if self.current_data['Flags2'] is not None:
-                return bool(self.current_data['Flags2'] & flag)
+                return bool((self.current_data.get('Flags2') or 0) & flag)
             return False
         else:
             return False

@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import atexit
 import json
+import math
 import os
 from pathlib import Path
 import select
 import subprocess
 import threading
+import time
 
 
 class MacOSBridgeError(RuntimeError):
@@ -24,10 +26,14 @@ class MacOSBridge:
         # An RLock keeps that recovery path serialized without deadlocking it.
         self._lock = threading.RLock()
         self.timeout = float(os.environ.get("EDAP_MACOS_BRIDGE_TIMEOUT", "2.0"))
+        if not math.isfinite(self.timeout) or self.timeout <= 0:
+            raise ValueError("EDAP_MACOS_BRIDGE_TIMEOUT must be finite and positive")
 
     def _start(self):
         if self._process is not None and self._process.poll() is None:
             return
+        if self._process is not None:
+            self.close()
         if not self.helper.is_file():
             raise MacOSBridgeError(
                 f"Native input helper is missing: {self.helper}. Run platform/macos/build_bridges.command.")
@@ -37,45 +43,66 @@ class MacOSBridge:
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=None,
-            text=True,
-            bufsize=1,
+            bufsize=0,
         )
+        os.set_blocking(self._process.stdin.fileno(), False)
+        os.set_blocking(self._process.stdout.fileno(), False)
+
+    def _exchange(self, payload):
+        # Readiness of a pipe guarantees bytes, not a complete JSON line.
+        # Keep both writes and reads nonblocking under one response deadline.
+        deadline = time.monotonic() + self.timeout
+        output = bytearray()
+        stdin = self._process.stdin.fileno()
+        stdout = self._process.stdout.fileno()
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(
+                    f"Native input helper did not respond within {self.timeout:g} seconds")
+            readable, writable, _ = select.select(
+                [] if payload else [stdout], [stdin] if payload else [], [], remaining)
+            if writable:
+                try:
+                    payload = payload[os.write(stdin, payload):]
+                except BlockingIOError:
+                    continue
+            if readable:
+                try:
+                    chunk = os.read(stdout, 4096)
+                except BlockingIOError:
+                    continue
+                if not chunk:
+                    raise OSError("EOF before a complete helper response")
+                output.extend(chunk)
+                if len(output) > 65536:
+                    raise ValueError("Helper response exceeds 64 KiB")
+                if b"\n" in output:
+                    line, extra = output.split(b"\n", 1)
+                    if extra:
+                        raise ValueError("Unexpected extra helper response")
+                    return json.loads(line)
 
     def request(self, op, *, start_helper=True, **values):
         with self._lock:
             if not start_helper and (
                     self._process is None or self._process.poll() is not None):
                 return None
-            self._start()
-            request = {"op": op, **values}
             try:
-                self._process.stdin.write(json.dumps(request, separators=(",", ":")) + "\n")
-                self._process.stdin.flush()
-                ready, _, _ = select.select(
-                    [self._process.stdout], [], [], self.timeout)
-                if not ready:
-                    raise TimeoutError(
-                        f"Native input helper did not respond within {self.timeout:g} seconds")
-                line = self._process.stdout.readline()
-            except (BrokenPipeError, OSError, TimeoutError) as exc:
+                self._start()
+                payload = (json.dumps({"op": op, **values}, separators=(",", ":")) + "\n").encode()
+                response = self._exchange(payload)
+                if not isinstance(response, dict) or not isinstance(response.get("ok"), bool):
+                    raise ValueError("Helper response must be an object with a boolean 'ok'")
+            except (OSError, ValueError) as exc:
                 self.close()
-                raise MacOSBridgeError(f"Native input helper stopped: {exc}") from exc
-            if not line:
-                code = self._process.poll()
-                self.close()
-                raise MacOSBridgeError(f"Native input helper exited unexpectedly ({code})")
-            try:
-                response = json.loads(line)
-            except json.JSONDecodeError as exc:
-                self.close()
-                raise MacOSBridgeError(
-                    f"Native input helper returned malformed data: {exc}") from exc
-            if not response.get("ok"):
+                raise MacOSBridgeError(f"Native input helper failed: {exc}") from exc
+            if not response["ok"]:
                 raise MacOSBridgeError(response.get("error", "Native helper request failed"))
             return response
 
     def key(self, scan_code: int, down: bool):
-        return self.request("key", scanCode=int(scan_code), down=bool(down))
+        return self.request("key", start_helper=bool(down), scanCode=int(scan_code), down=bool(down))
 
     def focus_elite(self):
         return self.request("focus")
@@ -96,18 +123,20 @@ class MacOSBridge:
             if process is None:
                 return
             try:
-                if process.poll() is None:
-                    process.stdin.write('{"op":"quit"}\n')
-                    process.stdin.flush()
+                # EOF asks the helper to release its held keys and exit. Never
+                # flush a potentially full pipe as part of bounded cleanup.
+                process.stdin.close()
+                try:
                     process.wait(timeout=1)
-            except (BrokenPipeError, OSError, subprocess.TimeoutExpired):
-                if process.poll() is None:
+                except subprocess.TimeoutExpired:
                     process.terminate()
                     try:
                         process.wait(timeout=0.5)
                     except subprocess.TimeoutExpired:
                         process.kill()
                         process.wait(timeout=0.5)
+            finally:
+                process.stdout.close()
 
 
 bridge = MacOSBridge()

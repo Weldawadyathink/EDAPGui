@@ -1,4 +1,5 @@
 from __future__ import annotations
+from CooperativeStop import StopEvent, cooperative_command
 
 import math
 import threading
@@ -116,7 +117,7 @@ class EDAutopilot:
         self.ship_tst_roll_enabled = False
         self.ship_tst_pitch_enabled = False
         self.ship_tst_yaw_enabled = False
-        self.stop_event = threading.Event()
+        self.stop_event = StopEvent()
         self._resource_lock = threading.Lock()
 
         # Load AP.json config
@@ -1430,7 +1431,7 @@ class EDAutopilot:
         self._sc_sco_active_loop_enable = True
 
         if self._sc_sco_active_loop_thread is None or not self._sc_sco_active_loop_thread.is_alive():
-            self._sc_sco_active_loop_thread = threading.Thread(target=self._sc_sco_active_loop, daemon=True)
+            self._sc_sco_active_loop_thread = threading.Thread(target=self.stop_event.wrap(self._sc_sco_active_loop), daemon=True)
             self._sc_sco_active_loop_thread.start()
 
     def stop_sco_monitoring(self):
@@ -2505,6 +2506,7 @@ class EDAutopilot:
 
         return True
 
+    @cooperative_command
     def waypoint_assist(self, keys, scr_reg):
         """ Processes the waypoints, performing jumps and sc assist if going to a station
         also can then perform trades if specific in the waypoints file."""
@@ -2573,6 +2575,7 @@ class EDAutopilot:
 
         return True
 
+    @cooperative_command
     def fsd_assist(self, scr_reg) -> FSDAssistReturn:
         """ FSD Route Assist. Jumps repeatedly to the destination system then returns.
         @return: True when arrived in system and no in-system target exists. False when
@@ -2639,7 +2642,7 @@ class EDAutopilot:
                 self.ap_ckb('log', 'ETA (to System): '+self._str_eta)
 
                 # Do the Discovery Scan (Honk)
-                self.honk_thread = threading.Thread(target=self.honk, daemon=True)
+                self.honk_thread = threading.Thread(target=self.stop_event.wrap(self.honk), daemon=True)
                 self.honk_thread.start()
 
                 # Rotate destination to roughly the top if we have a destination
@@ -2677,6 +2680,7 @@ class EDAutopilot:
             self._interruptible_sleep(1)
             return FSDAssistReturn.Partial
 
+    @cooperative_command
     def sc_assist(self, scr_reg, do_docking=True):
         """ Supercruise Assist loop to travel to target in system and perform autodock.
         """
@@ -2799,11 +2803,13 @@ class EDAutopilot:
 
         self.ap_ckb('log+vce', "Supercruise Assist complete")
 
+    @cooperative_command
     def robigo_assist(self):
         self.robigo.loop(self)
 
     # Simply monitor for Shields down so we can boost away or our fighter got destroyed
     # and thus redeploy another one
+    @cooperative_command
     def afk_combat_loop(self):
         while True:
             self.raise_if_stop_requested()
@@ -2824,6 +2830,7 @@ class EDAutopilot:
 
         self.vce.say("Terminating AFK Combat Assist")
 
+    @cooperative_command
     def dss_assist(self):
         while True:
             self.raise_if_stop_requested()
@@ -2838,6 +2845,7 @@ class EDAutopilot:
                     self._prev_star_system = cur_star_system
                     self.update_ap_status("Idle")
 
+    @cooperative_command
     def single_waypoint_assist(self):
         """ Travel to a system or station or both."""
         if self._single_waypoint_system == "" and self._single_waypoint_station == "":
@@ -3051,15 +3059,15 @@ class EDAutopilot:
                     fin = self.fsd_assist(self.scrReg)
                 except (EDAP_Interrupt, InterruptedError):
                     logger.debug("Caught stop exception")
-                    self.keys.release_all_keys()
                 except Exception as e:
                     logger.debug("FSD Assist trapped generic:"+str(e))
                     print("Trapped generic:"+str(e))
                     traceback.print_exc()
+                finally:
+                    self.keys.release_all_keys()
 
                 self.stop_sco_monitoring()
                 self.fsd_assist_enabled = False
-                self.stop_event.clear()
                 self.ap_ckb('fsd_stop')
                 self.update_overlay()
 
@@ -3067,7 +3075,7 @@ class EDAutopilot:
                 # defined.  So lets enable Supercruise assist to get us there
                 # Note: this is tricky, in normal FSD jumps the target is pretty much on the other side of Sun
                 #  when we arrive, but not so when we are in the final system
-                if fin == FSDAssistReturn.Partial:
+                if fin == FSDAssistReturn.Partial and not self.stop_event.is_set():
                     self.ap_ckb("sc_start")
 
                 # drop all out debug windows
@@ -3083,16 +3091,16 @@ class EDAutopilot:
                     self.sc_assist(self.scrReg)
                 except (EDAP_Interrupt, InterruptedError):
                     logger.debug("Caught stop exception")
-                    self.keys.release_all_keys()
                 except Exception as e:
                     print("Trapped generic:"+str(e))
                     logger.debug("SC Assist trapped generic:"+str(e))
                     traceback.print_exc()
+                finally:
+                    self.keys.release_all_keys()
 
                 self.stop_sco_monitoring()
                 logger.debug("Completed sc_assist")
                 self.sc_assist_enabled = False
-                self.stop_event.clear()
                 self.ap_ckb('sc_stop')
                 self.update_overlay()
 
@@ -3109,15 +3117,15 @@ class EDAutopilot:
                     self.waypoint_assist(self.keys, self.scrReg)
                 except (EDAP_Interrupt, InterruptedError):
                     logger.debug("Caught stop exception")
-                    self.keys.release_all_keys()
                 except Exception as e:
                     print("Trapped generic:"+str(e))
                     logger.debug("Waypoint Assist trapped generic:"+str(e))
                     traceback.print_exc()
+                finally:
+                    self.keys.release_all_keys()
 
                 self.stop_sco_monitoring()
                 self.waypoint_assist_enabled = False
-                self.stop_event.clear()
                 self.ap_ckb('waypoint_stop')
                 self.update_overlay()
 
@@ -3129,15 +3137,15 @@ class EDAutopilot:
                     self.robigo_assist()
                 except (EDAP_Interrupt, InterruptedError):
                     logger.debug("Caught stop exception")
-                    self.keys.release_all_keys()
                 except Exception as e:
                     print("Trapped generic:"+str(e))
                     logger.debug("Robigo Assist trapped generic:"+str(e))
                     traceback.print_exc()
+                finally:
+                    self.keys.release_all_keys()
 
                 self.stop_sco_monitoring()
                 self.robigo_assist_enabled = False
-                self.stop_event.clear()
                 self.ap_ckb('robigo_stop')
                 self.update_overlay()
 
@@ -3147,15 +3155,15 @@ class EDAutopilot:
                     self.afk_combat_loop()
                 except (EDAP_Interrupt, InterruptedError):
                     logger.debug("Stopping afk_combat")
-                    self.keys.release_all_keys()
                 except Exception as e:
                     print("Trapped generic:" + str(e))
                     logger.debug("AFK Combat Assist trapped generic:" + str(e))
                     traceback.print_exc()
+                finally:
+                    self.keys.release_all_keys()
 
                 self.stop_sco_monitoring()
                 self.afk_combat_assist_enabled = False
-                self.stop_event.clear()
                 self.ap_ckb('afk_stop')
                 self.update_overlay()
 
@@ -3167,14 +3175,14 @@ class EDAutopilot:
                     self.dss_assist()
                 except (EDAP_Interrupt, InterruptedError):
                     logger.debug("Stopping DSS Assist")
-                    self.keys.release_all_keys()
                 except Exception as e:
                     print("Trapped generic:" + str(e))
                     logger.debug("DSS Assist trapped generic:" + str(e))
                     traceback.print_exc()
+                finally:
+                    self.keys.release_all_keys()
 
                 self.dss_assist_enabled = False
-                self.stop_event.clear()
                 self.ap_ckb('dss_stop')
                 self.update_overlay()
 
@@ -3184,15 +3192,15 @@ class EDAutopilot:
                     self.single_waypoint_assist()
                 except (EDAP_Interrupt, InterruptedError):
                     logger.debug("Stopping Single Waypoint Assist")
-                    self.keys.release_all_keys()
                 except Exception as e:
                     print("Trapped generic:" + str(e))
                     logger.debug("Single Waypoint Assist trapped generic:" + str(e))
                     traceback.print_exc()
+                finally:
+                    self.keys.release_all_keys()
 
                 self.stop_sco_monitoring()
                 self.single_waypoint_enabled = False
-                self.stop_event.clear()
                 self.ap_ckb('single_waypoint_stop')
                 self.update_overlay()
 
@@ -3256,7 +3264,7 @@ class EDAutopilot:
             self.speed_demand = 'Speed0'
             self.ap_ckb('log', f"Setting throttle to 0%.")
 
-        self.keys.send('SetSpeedZero', repeat)
+        self.keys.send('SetSpeedZero', repeat=repeat)
 
     def set_throttle_50(self, repeat=1):
         if self.status.get_flag(FlagsSupercruise):
@@ -3266,7 +3274,7 @@ class EDAutopilot:
             self.speed_demand = 'Speed50'
             self.ap_ckb('log', f"Setting throttle to 50%.")
 
-        self.keys.send('SetSpeed50', repeat)
+        self.keys.send('SetSpeed50', repeat=repeat)
 
     def set_throttle_100(self, repeat=1):
         if self.status.get_flag(FlagsSupercruise):
@@ -3276,7 +3284,7 @@ class EDAutopilot:
             self.speed_demand = 'Speed100'
             self.ap_ckb('log', f"Setting throttle to 100%.")
 
-        self.keys.send('SetSpeed100', repeat)
+        self.keys.send('SetSpeed100', repeat=repeat)
 
 
 def delete_old_log_files():

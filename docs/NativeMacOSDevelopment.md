@@ -36,7 +36,8 @@ launch_native.command
     └── macos_hotkey_bridge  (pipe-owned)
 ```
 
-The launcher uses an atomic directory lock for a single instance. If capture
+The launcher holds an OS file lock for a single instance; the lock directory
+is diagnostic state only. The lock file is retained to preserve inode identity. If capture
 fails, Elite closes, Python exits, or the launcher receives a termination
 signal, it stops the rest of the owned tree. Termination is bounded and may
 escalate from TERM to KILL during cleanup. This is deterministic lifecycle
@@ -49,7 +50,10 @@ visible Elite window, filters capture to the owning Wine application, and crops
 to Elite's frame. Application filtering deliberately survives Wine replacing
 the native window object. A process source and a short-grace window monitor end
 the runtime when Elite disappears, including the case where Wine itself stays
-alive. Switching Spaces or minimizing does not count as closing the window.
+alive. Switching Spaces or minimizing does not count as closing the window. Moving or
+resizing the visible window stops capture with a relaunch message because the
+application-filter stream has a fixed crop. Capture and overlay also monitor
+the launcher PID so a killed launcher cannot leave them running.
 
 Frames are BGRA data in a memory-mapped file. A small header contains a
 monotonic sequence and dimensions. `Screen.py` rejects a sequence that has not
@@ -66,15 +70,18 @@ Alt/Option, are explicit; the user's known-working binding chords remain the
 source of truth.
 
 The helper tracks only successfully posted key-down events. Stop and shutdown
-use one nonblocking `releaseAll` request; cleanup never starts a new helper just
+use one bounded `releaseAll` request; cleanup never starts a new helper just
 to release keys after Elite is gone. Failed chords attempt a complete key-up
-before propagating the error. `MacOSBridge.py` serializes requests, enforces a
-response timeout, and forcibly reaps a helper that will not quit.
+before propagating the error. Chords and text entry are serialized across
+workers. Releases target the original key-down PID, including when its window
+is hidden; EOF releases held keys. `MacOSBridge.py` uses nonblocking pipes with
+a request deadline and forcibly reaps a helper that will not quit.
 
 `macos_hotkey_bridge.swift` uses a Core Graphics event tap for configured global
 start/stop hotkeys. The End hotkey sets a cooperative stop event, releases held
 input, and discards commands that have not started. A later explicit action
-clears the old stop request and begins a new command generation.
+begins a new command generation. `CooperativeStop.StopEvent` keeps the original
+event bound to existing workers so restarting cannot revive stopped work.
 
 ### Tk and background work
 
@@ -84,6 +91,9 @@ actions run as daemon workers. Identical throttle commands coalesce: while one
 is in flight, the latest requested setting replaces earlier pending settings
 and runs when possible. Completion messages carry the exact worker identity to
 avoid an old completion removing a newer task.
+
+Snapshot JSON reads have bounded retries and cache the pre-read modification
+time; status waits include these retries in their overall deadline.
 
 Long assist waits use `stop_event.wait(...)` or explicit stop checks rather than
 uninterruptible sleeps. Keep new control loops cooperative and avoid adding
@@ -178,3 +188,8 @@ Keep commits focused and checkpoint working reliability improvements. Preserve
 the native compatibility layer when incorporating upstream changes, and do not
 commit user configurations, Wine bottle contents, generated models, binaries,
 or runtime logs.
+
+## Robustness review
+
+See [NativeMacOSReview.md](NativeMacOSReview.md) for the September 2026 findings,
+verification scope, and additional supervised integration checks.

@@ -16,7 +16,9 @@ private let keyCodes: [String: CGKeyCode] = [
     "o": 31, "u": 32, "i": 34, "p": 35, "l": 37, "j": 38, "k": 40,
     "n": 45, "m": 46, "space": 49, "escape": 53, "insert": 114,
     "home": 115, "page_up": 116, "end": 119, "page_down": 121,
-    "f1": 122, "left": 123, "right": 124, "down": 125, "up": 126
+    "f1": 122, "f2": 120, "f3": 99, "f4": 118, "f5": 96, "f6": 97,
+    "f7": 98, "f8": 100, "f9": 101, "f10": 109, "f11": 103, "f12": 111,
+    "tab": 48, "enter": 36, "backspace": 51, "delete": 117, "left": 123, "right": 124, "down": 125, "up": 126
 ]
 
 private func normalized(_ value: String) -> String {
@@ -78,7 +80,12 @@ guard !bindings.isEmpty else {
     exit(2)
 }
 
+private var activeTap: CFMachPort?
 let callback: CGEventTapCallBack = { _, type, event, _ in
+    if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+        if let tap = activeTap { CGEvent.tapEnable(tap: tap, enable: true) }
+        return Unmanaged.passUnretained(event)
+    }
     guard type == .keyDown,
           event.getIntegerValueField(.keyboardEventAutorepeat) == 0 else {
         return Unmanaged.passUnretained(event)
@@ -102,6 +109,7 @@ guard let tap = CGEvent.tapCreate(
         "macos_hotkey_bridge: Input Monitoring permission is required\n".utf8))
     exit(77)
 }
+activeTap = tap
 let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
 CFRunLoopAddSource(CFRunLoopGetCurrent(), source, .commonModes)
 CGEvent.tapEnable(tap: tap, enable: true)
