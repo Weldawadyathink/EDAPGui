@@ -6,7 +6,11 @@
 import ctypes
 import time
 
-SendInput = ctypes.windll.user32.SendInput
+# A normal ctypes function releases the GIL while calling into Wine. Wine can
+# re-enter its input stack during SendInput, which has caused Python thread
+# state crashes on return. PyDLL keeps the GIL held around the Win32 call.
+_user32 = ctypes.PyDLL("user32.dll", use_last_error=True)
+SendInput = _user32.SendInput
 
 # Listed are keyboard scan code constants, taken from dinput.h
 SCANCODE = {
@@ -300,6 +304,10 @@ class Input(ctypes.Structure):
                 ("ii", Input_I)]
 
 
+SendInput.argtypes = (ctypes.c_uint, ctypes.POINTER(Input), ctypes.c_int)
+SendInput.restype = ctypes.c_uint
+
+
 # Actual Functions
 
 def PressKey(hexKeyCode):
@@ -307,11 +315,11 @@ def PressKey(hexKeyCode):
     ii_ = Input_I()
     ii_.ki = KeyBdInput(0, hexKeyCode, 0x0008, 0, ctypes.pointer(extra))
     x = Input(ctypes.c_ulong(1), ii_)
-    ctypes.windll.user32.SendInput(1, ctypes.pointer(x), ctypes.sizeof(x))
+    return SendInput(1, ctypes.pointer(x), ctypes.sizeof(x))
 
 def ReleaseKey(hexKeyCode):
     extra = ctypes.c_ulong(0)
     ii_ = Input_I()
     ii_.ki = KeyBdInput(0, hexKeyCode, 0x0008 | 0x0002, 0, ctypes.pointer(extra))
     x = Input(ctypes.c_ulong(1), ii_)
-    ctypes.windll.user32.SendInput(1, ctypes.pointer(x), ctypes.sizeof(x))
+    return SendInput(1, ctypes.pointer(x), ctypes.sizeof(x))

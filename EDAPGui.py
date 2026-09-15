@@ -8,6 +8,7 @@
 # import cv2
 # import json
 # from pathlib import Path
+import os
 import subprocess
 from typing import TypedDict
 
@@ -23,6 +24,7 @@ from tkinter import filedialog as fd
 from tkinter import ttk
 import sv_ttk
 import pywinstyles
+import win32gui
 import sys  # Do not delete - prevents a 'super' error from tktoolip.
 from tktooltip import ToolTip  # In requirements.txt as 'tkinter-tooltip'.
 
@@ -1351,6 +1353,22 @@ def main():
 
     root = tk.Tk()
     app = APGui(root)
+
+    # MoltenVR may capture the display hosting Elite. Allow its launcher to
+    # place the control window elsewhere without changing Windows behavior.
+    if os.environ.get("EDAP_GUI_X") is not None:
+        root.update_idletasks()
+        hwnd = win32gui.FindWindow(None, "EDAutopilot " + EDAP_VERSION)
+        if hwnd:
+            rect = win32gui.GetWindowRect(hwnd)
+            win32gui.MoveWindow(
+                hwnd,
+                int(os.environ["EDAP_GUI_X"]),
+                int(os.environ.get("EDAP_GUI_Y", "25")),
+                rect[2] - rect[0],
+                rect[3] - rect[1],
+                True,
+            )
 
     sv_ttk.set_theme("dark")
 

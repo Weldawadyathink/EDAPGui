@@ -32,8 +32,9 @@ class Voice:
         self.q = queue.Queue(5)
         self.v_enabled = False
         self.v_quit = False
-        self.t = kthread.KThread(target=self.voice_exec, name="Voice", daemon=True)
-        self.t.start()
+        # Initializing SAPI during application startup can hang under Wine.
+        # Start the worker lazily only when voice output is enabled.
+        self.t = None
         self.v_id = 1
 
     def say(self, vSay):
@@ -49,6 +50,10 @@ class Voice:
 
     def set_on(self):
         self.v_enabled = True
+        if self.t is None or not self.t.is_alive():
+            self.v_quit = False
+            self.t = kthread.KThread(target=self.voice_exec, name="Voice", daemon=True)
+            self.t.start()
         
     def set_voice_id(self, id):
         self.v_id = id
@@ -57,7 +62,12 @@ class Voice:
         self.v_quit = True
         
     def voice_exec(self):
-        engine = pyttsx3.init()
+        try:
+            engine = pyttsx3.init()
+        except Exception as exc:
+            self.v_enabled = False
+            print(f"Voice output is unavailable: {exc}")
+            return
         voices = engine.getProperty('voices')
         v_id_current = 0   # David
         engine.setProperty('voice', voices[v_id_current].id)   

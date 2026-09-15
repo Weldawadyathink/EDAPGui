@@ -24,3 +24,10 @@ configs/ship_configs.json
 test/match/
 debug-output/
 runs/
+
+# MoltenVR/macOS native bridge build and runtime output
+/platform/macos/macos_capture_bridge
+/platform/macos/macos_overlay_bridge
+/.wine-capture/
+/edapgui-launch.log
+/venv/

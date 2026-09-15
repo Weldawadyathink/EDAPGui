@@ -8,6 +8,7 @@ from os.path import join, isfile, getmtime, abspath
 from json import loads
 from time import sleep, time
 from datetime import datetime
+from threading import RLock
 
 from EDAP_data import ship_size_map, ship_name_map
 from EDlogger import logger
@@ -217,6 +218,7 @@ class EDJournal:
         self.log_file = None
         self.current_log = self.get_latest_log()
         self.open_journal(self.current_log)
+        self._journal_lock = RLock()
         self._prev_const_depot_details = None
 
         self.ship = {
@@ -273,7 +275,7 @@ class EDJournal:
     def get_latest_log(self, path_logs=None):
         """Returns the full path of the latest (most recent) elite log file (journal) from specified path"""
         if not path_logs:
-            path_logs = get_path(FOLDERID.SavedGames, UserHandle.current) + "\Frontier Developments\Elite Dangerous"
+            path_logs = get_path(FOLDERID.SavedGames, UserHandle.current) + r"\Frontier Developments\Elite Dangerous"
         list_of_logs = [join(path_logs, f) for f in listdir(path_logs) if isfile(join(path_logs, f)) and f.startswith('Journal.')]
         if not list_of_logs:
             return None
@@ -590,24 +592,29 @@ class EDJournal:
                 write_construction(const, filepath)
 
     def ship_state(self):
-        latest_log = self.get_latest_log()
+        # Wine may cache an open journal's mtime after Elite appends records.
+        # Probe the stream directly and serialize readers of the shared cursor.
+        with self._journal_lock:
+            latest_log = self.get_latest_log()
 
-        # open journal file if not open yet or there is a more recent journal
-        if self.current_log is None or self.current_log != latest_log:
-            self.open_journal(latest_log)
+            if self.current_log is None or self.current_log != latest_log:
+                self.current_log = latest_log
+                self.open_journal(latest_log)
 
-        # Check if file changed
-        if self.get_file_modified_time() == self.last_mod_time:
-            return self.ship
+            cnt = 0
+            while True:
+                line_start = self.log_file.tell()
+                line = self.log_file.readline()
+                if not line:
+                    break
 
-        cnt = 0
-        while True:
-            line = self.log_file.readline()
-            # if end of file then break from while True
-            if not line:
-                break
-            else:
-                log = loads(line)
+                try:
+                    log = loads(line)
+                except json.JSONDecodeError:
+                    # Elite may still be writing the final record. Retry the
+                    # complete line on the next poll.
+                    self.log_file.seek(line_start)
+                    break
                 cnt = cnt + 1
                 current_jrnl = self.ship.copy()
                 self.parse_line(log)
@@ -615,8 +622,8 @@ class EDJournal:
                 if self.ship != current_jrnl:
                     logger.debug('Journal*.log: read: '+str(cnt)+' ship: '+str(self.ship))
 
-        self.last_mod_time = self.get_file_modified_time()
-        return self.ship
+            self.last_mod_time = self.get_file_modified_time()
+            return self.ship
 
 
 def write_construction(data, filename='./configs/construction.json'):
@@ -656,5 +663,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-
 

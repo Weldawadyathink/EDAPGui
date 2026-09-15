@@ -195,7 +195,14 @@ class WaypointEditorTab:
         self.file_watcher_thread = None
         self.watching_filepath: str = ''
         self.last_modified_time = None
-        self.mesg_client = create_edap_client(15570, 15571)
+        # Constructing an unused ZeroMQ context can hang during Wine startup.
+        # The only publish call in this editor is currently disabled, so keep
+        # the client lazy and honor the application's EDMesg feature flag.
+        self.mesg_client = None
+        if self.ed_waypoint.ap.config.get('EnableEDMesg', False):
+            self.mesg_client = create_edap_client(
+                self.ed_waypoint.ap.config['EDMesgActionsPort'],
+                self.ed_waypoint.ap.config['EDMesgEventsPort'])
         self.commodities = EDAP_data.sorted_commodities()
         self.commodities_with_all = EDAP_data.sorted_commodities()
         self.commodities_with_all.insert(0, 'ALL')
@@ -1288,4 +1295,3 @@ class WaypointEditorTab:
         self.waypoints.waypoints.append(to_waypoint)
         self.update_waypoints_list()
         messagebox.showinfo("Inara Route Added", "The trade route has been added to your waypoints.")
-

@@ -1,4 +1,8 @@
 See [ChangeLog](/ChangeLog.md) for latest updates.<br>
+
+MoltenVR/macOS users should see [docs/MoltenVR.md](docs/MoltenVR.md) for this
+fork's native capture, overlay, and launcher support.
+
 IMPORTANT: 
 1. Read the rest of this page before requesting support. **Don't** use the Github **Issues** page. It is not monitored. Use Discord instead.
 2. Join discord if you need support or wish to provide inputs on new features:  https://discord.gg/HCgkfSc

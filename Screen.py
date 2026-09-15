@@ -1,4 +1,7 @@
 from __future__ import annotations
+import mmap
+import os
+import struct
 import time
 import typing
 from copy import copy
@@ -30,6 +33,7 @@ Author: sumzer0@yahoo.com
 #     img = ImageGrab.grab(bbox)
 
 elite_dangerous_window = "Elite - Dangerous (CLIENT)"
+BRIDGE_HEADER = struct.Struct("<QII")
 
 
 def set_focus_elite_window():
@@ -92,6 +96,9 @@ class Screen:
         self._last_capture_warn_ts = 0.0
         self._capture_warn_interval = 5.0  # seconds between repeated warnings
         self._capture_failure_count = 0
+        self._bridge_file = None
+        self._bridge_map = None
+        self._bridge_path = os.environ.get("EDAP_CAPTURE_FILE")
 
         # Find ED window position to determine which monitor it is on
         self.ed_rect = self.get_elite_window_rect()
@@ -261,11 +268,15 @@ class Screen:
             "height": int(y_bot - y_top),
             "mon": self.monitor_number,
         }
-        try:
-            image = array(self.mss.grab(monitor))
-        except Exception as e:
-            self._warn_capture_failure(f"mss.grab() raised {type(e).__name__}: {e}")
-            return None
+        # Wine's GDI capture commonly returns black frames on macOS. When a
+        # native frame bridge is configured, use it before the Windows path.
+        image = self._get_bridge_region(x_left, y_top, x_right, y_bot)
+        if image is None:
+            try:
+                image = array(self.mss.grab(monitor))
+            except Exception as e:
+                self._warn_capture_failure(f"mss.grab() raised {type(e).__name__}: {e}")
+                return None
 
         if image is None or image.size == 0 or image.shape[0] == 0 or image.shape[1] == 0:
             self._warn_capture_failure(
@@ -284,6 +295,61 @@ class Screen:
                 self._warn_capture_failure(f"cv2.cvtColor failed on captured image: {e}")
                 return None
         return image
+
+    def _get_bridge_region(self, x_left, y_top, x_right, y_bot):
+        """Read a consistent BGRA rectangle from the macOS capture bridge."""
+        if not self._bridge_path:
+            return None
+
+        try:
+            if self._bridge_map is None:
+                self._bridge_file = open(self._bridge_path, "rb")
+                self._bridge_map = mmap.mmap(self._bridge_file.fileno(), 0, access=mmap.ACCESS_READ)
+
+            for _ in range(3):
+                first = self._bridge_map[:BRIDGE_HEADER.size]
+                sequence, width, height = BRIDGE_HEADER.unpack(first)
+                if sequence == 0 or sequence & 1:
+                    time.sleep(0.002)
+                    continue
+
+                left = max(0, min(int(x_left), width))
+                top = max(0, min(int(y_top), height))
+                right = max(left, min(int(x_right), width))
+                bottom = max(top, min(int(y_bot), height))
+                if right == left or bottom == top:
+                    return None
+
+                row_bytes = (right - left) * 4
+                if left == 0 and right == width:
+                    source_offset = BRIDGE_HEADER.size + top * width * 4
+                    pixels = self._bridge_map[
+                        source_offset:source_offset + row_bytes * (bottom - top)]
+                else:
+                    pixels = bytearray(row_bytes * (bottom - top))
+                    output_offset = 0
+                    for row in range(top, bottom):
+                        source_offset = BRIDGE_HEADER.size + (row * width + left) * 4
+                        pixels[output_offset:output_offset + row_bytes] = self._bridge_map[
+                            source_offset:source_offset + row_bytes]
+                        output_offset += row_bytes
+
+                if first == self._bridge_map[:BRIDGE_HEADER.size]:
+                    return np.frombuffer(pixels, dtype=np.uint8).reshape(
+                        bottom - top, right - left, 4)
+        except (OSError, ValueError, struct.error) as exc:
+            self._warn_capture_failure(
+                f"native capture bridge unavailable: {type(exc).__name__}: {exc}")
+            self._close_bridge()
+        return None
+
+    def _close_bridge(self):
+        if self._bridge_map is not None:
+            self._bridge_map.close()
+            self._bridge_map = None
+        if self._bridge_file is not None:
+            self._bridge_file.close()
+            self._bridge_file = None
         
     def get_screen_rect_pct(self, rect):
         """ Grabs a screenshot and returns the selected region as an image.

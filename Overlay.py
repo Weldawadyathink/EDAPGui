@@ -1,3 +1,5 @@
+import json
+import os
 import threading
 from copy import copy
 from ctypes.wintypes import PRECT
@@ -60,13 +62,34 @@ class Overlay:
         self.parent = parent_window
         if elite == 1:
             self.parent = elite_dangerous_window
-        
+
         self.hWindow = None
+        self.tHwnd = None
+        self.targetRect = Vector(0, 0, 1920, 1200)
+        self.native_path = os.environ.get("EDAP_NATIVE_OVERLAY_FILE")
+        self.disabled = os.environ.get("EDAP_DISABLE_OVERLAY", "0") == "1"
+
+        if self.disabled:
+            return
+
+        # Wine does not reliably implement the color-keyed layered window.
+        # Keep EDAP's overlay model, but publish it to a native macOS renderer.
+        if self.native_path:
+            if self.parent != "":
+                self.tHwnd = win32gui.FindWindow(None, self.parent)
+                if self.tHwnd:
+                    rect = win32gui.GetWindowRect(self.tHwnd)
+                    self.targetRect = Vector(
+                        rect[0], rect[1], rect[2] - rect[0], rect[3] - rect[1])
+            self._write_native_state()
+            self._overlay_update_thread = threading.Thread(
+                target=self._overlay_cleanup_loop, daemon=True)
+            self._overlay_update_thread.start()
+            return
+
         self.overlay_thr = threading.Thread(target=self.overlay_win32_run)
         self.overlay_thr.setDaemon(False)
         self.overlay_thr.start()
-        self.targetRect = Vector(0, 0, 1920, 1200)
-        self.tHwnd = None
         self._overlay_update_thread = threading.Thread(target=self._overlay_cleanup_loop, daemon=True)
         self._overlay_update_thread.start()
 
@@ -188,6 +211,18 @@ class Overlay:
 
     def overlay_paint(self):
         """ Forces a redraw of all overlays. Call after adding or removing an overlay. """
+        if self.disabled:
+            return
+        if self.native_path:
+            if self.tHwnd:
+                rect = win32gui.GetWindowRect(self.tHwnd)
+                self.targetRect = Vector(
+                    rect[0], rect[1], rect[2] - rect[0], rect[3] - rect[1])
+            self._write_native_state()
+            return
+        if self.hWindow is None:
+            return
+
         # if a parent was specified check to see if it moved, if so reposition our origin to new window location
         if self.tHwnd:
             if self.targetRect != self._GetTargetWindowRect():
@@ -225,7 +260,54 @@ class Overlay:
             floating_text.pop(key)
 
     def overlay_quit(self):
+        if self.disabled:
+            return
+        if self.native_path:
+            self.overlay_clear()
+            self._write_native_state(quit_requested=True)
+            return
+        if self.hWindow is None:
+            return
         win32gui.PostMessage(self.hWindow, win32con.WM_CLOSE, 0, 0)
+
+    def _write_native_state(self, quit_requested=False):
+        """Atomically publish overlay state for the native renderer."""
+        if not self.native_path:
+            return
+
+        def point(pt):
+            return [float(pt.get_x()), float(pt.get_y())]
+
+        try:
+            state = {
+                "quit": quit_requested,
+                "target": [self.targetRect.x, self.targetRect.y,
+                           self.targetRect.w, self.targetRect.h],
+                "font": [fnt[0], fnt[1]],
+                "position": list(pos),
+                "rectangles": [
+                    [list(v[0]), list(v[1]), list(v[2]), v[3]]
+                    for v in list(lines.values())
+                ],
+                "quadrilaterals": [
+                    [[point(v[0].pt1), point(v[0].pt2), point(v[0].pt3), point(v[0].pt4)],
+                     list(v[1]), v[2]] for v in list(quadrilaterals.values())
+                ],
+                "text": [
+                    [v[0], v[1], v[2], list(v[3])] for v in list(text.values())
+                ],
+                "floating_text": [
+                    [v[0], v[1], v[2], list(v[3])]
+                    for v in list(floating_text.values())
+                ],
+            }
+            tmp_path = self.native_path + ".tmp"
+            with open(tmp_path, "w", encoding="utf-8") as output:
+                json.dump(state, output, separators=(",", ":"))
+            os.replace(tmp_path, self.native_path)
+        except (OSError, TypeError, AttributeError, RuntimeError):
+            # Overlay diagnostics must never terminate the autopilot.
+            return
 
     def _overlay_cleanup_loop(self):
         """ Cleans up the overlay by removing overlays that are old from the list. """
@@ -489,8 +571,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-
-
- 

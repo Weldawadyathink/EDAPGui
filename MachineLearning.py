@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import enum
+import os
 from dataclasses import dataclass
 import cv2
+import torch
 from ultralytics import YOLO
 from Screen_Regions import Quad
 
@@ -34,6 +36,12 @@ class MachLearn:
     def __init__(self, ed_ap, cb):
         self.ap = ed_ap
         self.ap_ckb = cb
+
+        # The MoltenVR launcher limits OpenMP for PaddleOCR stability. Restore
+        # a small PyTorch intra-op pool so YOLO does not inherit one thread.
+        torch_threads = max(1, int(os.environ.get("EDAP_TORCH_THREADS", "4")))
+        torch.set_num_threads(torch_threads)
+        self.ap_ckb('log', f"PyTorch YOLO inference threads: {torch.get_num_threads()}")
 
         self.compass_ml_model = YOLO("Yolo26/compass-model/weights/best.pt")
         self.target_ml_model = YOLO("Yolo26/target-model/weights/best.pt")
@@ -74,4 +82,3 @@ class MachLearn:
                 return matches
             else:
                 return None
-
