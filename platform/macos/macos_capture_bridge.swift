@@ -176,10 +176,24 @@ if let wantedTitle = arguments.windowTitle {
     }) else {
         fail("could not find a capturable Elite window named '\(wantedTitle)'")
     }
+    guard let application = window.owningApplication else {
+        fail("could not resolve the Wine application that owns '\(wantedTitle)'")
+    }
+    let windowDisplay = displays.first(where: { $0.frame.intersects(window.frame) }) ?? display
+    let sourceRect = CGRect(
+        x: window.frame.origin.x - windowDisplay.frame.origin.x,
+        y: window.frame.origin.y - windowDisplay.frame.origin.y,
+        width: window.frame.width,
+        height: window.frame.height)
+    configuration.sourceRect = sourceRect
     FileHandle.standardError.write(Data((
         "macos_capture_bridge: capturing '\(window.title ?? wantedTitle)' " +
-        "owned by \(window.owningApplication?.applicationName ?? "unknown")\n").utf8))
-    filter = SCContentFilter(desktopIndependentWindow: window)
+        "owned by \(application.applicationName)\n").utf8))
+    // Wine can replace its native SCWindow while Elite continues running.
+    // Filtering the owning application keeps the stream valid across that
+    // replacement; sourceRect limits the output to Elite's current frame.
+    filter = SCContentFilter(
+        display: windowDisplay, including: [application], exceptingWindows: [])
 } else {
     let excludedApplications: [SCRunningApplication]
     if let excludedPID = arguments.excludedPID,

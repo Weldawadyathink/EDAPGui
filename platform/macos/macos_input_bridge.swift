@@ -17,24 +17,29 @@ private struct EliteWindow {
     let title: String
 }
 
-private func eliteWindow() -> EliteWindow? {
-    let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
-    guard let raw = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else {
-        return nil
-    }
+private func eliteWindow(waitingUpTo timeout: TimeInterval = 0.75) -> EliteWindow? {
     let needle = wantedTitle.lowercased()
-    for item in raw {
-        let title = item[kCGWindowName as String] as? String ?? ""
-        guard title.lowercased().contains(needle) else { continue }
-        guard let pidNumber = item[kCGWindowOwnerPID as String] as? NSNumber,
-              let boundsValue = item[kCGWindowBounds as String],
-              let bounds = CGRect(dictionaryRepresentation: boundsValue as! CFDictionary) else { continue }
-        return EliteWindow(
-            pid: pidNumber.int32Value,
-            bounds: bounds,
-            owner: item[kCGWindowOwnerName as String] as? String ?? "",
-            title: title)
-    }
+    let deadline = Date().addingTimeInterval(timeout)
+    repeat {
+        let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
+        if let raw = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] {
+            for item in raw {
+                let title = item[kCGWindowName as String] as? String ?? ""
+                guard title.lowercased().contains(needle) else { continue }
+                guard let pidNumber = item[kCGWindowOwnerPID as String] as? NSNumber,
+                      let boundsValue = item[kCGWindowBounds as String],
+                      let bounds = CGRect(dictionaryRepresentation: boundsValue as! CFDictionary) else { continue }
+                return EliteWindow(
+                    pid: pidNumber.int32Value,
+                    bounds: bounds,
+                    owner: item[kCGWindowOwnerName as String] as? String ?? "",
+                    title: title)
+            }
+        }
+        if Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+    } while Date() < deadline
     return nil
 }
 
