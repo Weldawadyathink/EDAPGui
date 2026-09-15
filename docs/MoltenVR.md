@@ -71,6 +71,13 @@ PaddleOCR is loaded only when an OCR operation is first requested.
 The application log is `autopilot.log`; native launcher and helper diagnostics
 are written to `edapgui-native.log` in the source directory.
 
+## Launching from Raycast
+
+Run `platform/macos/install_app.command` once to install `EDAPGui.app` in your
+personal Applications folder. Raycast and Spotlight will then find it by the
+name `EDAPGui`. The app invokes the same native launcher described above; it
+does not run Python inside Wine.
+
 ## Rollback
 
 The launcher stored in the MoltenVR bottle runs this source checkout's native

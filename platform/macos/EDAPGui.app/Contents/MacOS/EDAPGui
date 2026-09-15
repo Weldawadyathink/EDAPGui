@@ -1,0 +1,21 @@
+#!/bin/zsh
+
+set -euo pipefail
+
+# A copied app bundle uses MoltenVR's standard source location. A bundle run
+# directly from this checkout resolves the launcher alongside itself instead.
+bundle_macos_dir="${0:A:h:h:h:h}"
+checkout_launcher="$bundle_macos_dir/launch_native.command"
+standard_launcher="$HOME/Library/Application Support/MoltenVR/Source/EDAPGui/platform/macos/launch_native.command"
+launcher="${EDAP_NATIVE_LAUNCHER:-$standard_launcher}"
+
+if [[ -x "$checkout_launcher" ]]; then
+  launcher="$checkout_launcher"
+fi
+
+if [[ ! -x "$launcher" ]]; then
+  osascript -e 'display alert "EDAPGui could not be launched" message "The native launcher was not found. Run platform/macos/setup_native.command from the EDAPGui checkout." as critical'
+  exit 1
+fi
+
+exec "$launcher"
