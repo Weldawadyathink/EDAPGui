@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import threading
 from functools import wraps
+from contextlib import contextmanager
+import time
 from os import listdir
 import os
 from os.path import getmtime, isfile, join
@@ -29,12 +31,17 @@ Constraints:  This file will use the latest modified *.binds file
 # whole chords/text so another command cannot inherit a half-pressed modifier.
 # Emergency release deliberately does not acquire this lock.
 _input_lock = threading.RLock()
+_exclusive_owner = None
 
 
 def serialized_input(method):
     @wraps(method)
     def run(self, *args, **kwargs):
+        if _exclusive_owner is not None and _exclusive_owner != threading.get_ident():
+            raise RuntimeError("Ship calibration currently owns input")
         with _input_lock:
+            if _exclusive_owner is not None and _exclusive_owner != threading.get_ident():
+                raise RuntimeError("Ship calibration currently owns input")
             return method(self, *args, **kwargs)
     return run
 
@@ -429,6 +436,57 @@ class EDKeys:
                 self._interruptible_sleep(repeat_delay)
             else:
                 self._interruptible_sleep(self.key_repeat_delay)
+
+    @contextmanager
+    def exclusive_input(self):
+        """Reserve flight input for a supervised experiment; End can still release."""
+        global _exclusive_owner
+        with _input_lock:
+            previous = _exclusive_owner
+            _exclusive_owner = threading.get_ident()
+            try:
+                yield
+            finally:
+                _exclusive_owner = previous
+
+    @serialized_input
+    def pulse(self, binding, seconds):
+        """A measured key pulse, excluding modifier setup and repeat delays.
+
+        Timestamps bracket the OS calls. Their midpoint estimates hold duration;
+        half the combined call latency is retained as timing uncertainty.
+        """
+        if not 0 < seconds <= 2:
+            raise ValueError('Pulse duration must be between zero and two seconds')
+        self._raise_if_stop_requested()
+        key = self.keys.get(binding)
+        if key is None:
+            raise RuntimeError(f'Missing Elite binding: {binding}')
+        if self.activate_window and not set_focus_elite_window():
+            raise RuntimeError('Elite window is unavailable')
+        up_done = False
+        try:
+            for modifier in key['mods']:
+                PressKey(modifier)
+                self._interruptible_sleep(self.key_mod_delay)
+            self._raise_if_stop_requested()
+            down_start = time.monotonic()
+            if PressKey(key['key']) == 0:
+                raise RuntimeError('Key-down was not delivered')
+            down_end = time.monotonic()
+            self._interruptible_sleep(seconds)
+            up_start = time.monotonic()
+            if ReleaseKey(key['key']) == 0:
+                raise RuntimeError('Key-up was not delivered')
+            up_end = time.monotonic()
+            up_done = True
+            return {'duration': (up_start+up_end-down_start-down_end)/2,
+                    'uncertainty': (down_end-down_start+up_end-up_start)/2}
+        finally:
+            if not up_done:
+                ReleaseKey(key['key'])
+            for modifier in reversed(key['mods']):
+                ReleaseKey(modifier)
 
     def release_all_keys(self):
         """Release all modifier keys and any currently tracked key presses to prevent stuck keys.

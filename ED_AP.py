@@ -1,5 +1,6 @@
 from __future__ import annotations
 from CooperativeStop import StopEvent, cooperative_command
+from ShipCalibration import ProfileStore, ShipIdentity, CalibrationError
 
 import math
 import threading
@@ -41,6 +42,7 @@ from StatusParser import StatusParser
 from Voice import *
 from Robigo import *
 from TCE_Integration import TceIntegration
+import time
 
 """
 File:EDAP.py    EDAutopilot
@@ -118,6 +120,8 @@ class EDAutopilot:
         self.ship_tst_pitch_enabled = False
         self.ship_tst_yaw_enabled = False
         self.stop_event = StopEvent()
+        self.calibration_busy = threading.Event()
+        self.calibration_store = ProfileStore()
         self._resource_lock = threading.Lock()
 
         # Load AP.json config
@@ -494,79 +498,17 @@ class EDAutopilot:
 
             self.current_ship_cfg = self.ship_configs['Ship_Configs'][self.current_ship_type]
 
-            self.current_ship_cfg['PitchRate'] = self.pitchrate
-            self.current_ship_cfg['RollRate'] = self.rollrate
-            self.current_ship_cfg['YawRate'] = self.yawrate
             self.current_ship_cfg['SunPitchUp+Time'] = self.sunpitchuptime
 
             write_json_file(self.ship_configs, filepath='./configs/ship_configs.json')
             logger.debug(f"Saved ship config for: {self.current_ship_type}")
 
     def load_ship_configuration(self, ship_type):
-        """ Load ship configuration with the following priority:
-            1. User's ship values from ship_configs.json file
-            2. Default ship values from default_ships_cfg_sc_50.json file
-            3. Hardcoded default values
-        """
-        self.ap_ckb('log', f"Loading ship configuration for your {ship_type}")
-
-        # Step 1: Use hardcoded defaults
-        self.rollrate = 80.0
-        self.pitchrate = 33.0
-        self.yawrate = 8.0
-        self.sunpitchuptime = 0.0
-        logger.info(f"Loaded hardcoded default configuration for {ship_type}")
-
-        # Step 2: Try to load defaults from ship file
-        if ship_type in ship_rpy_sc_50:
-            ship_defaults = ship_rpy_sc_50[ship_type]
-            # Use default configuration - this means it's been modified and saved to ship_configs.json
-            self.rollrate = ship_defaults.get('RollRate', 80.0)
-            self.pitchrate = ship_defaults.get('PitchRate', 33.0)
-            self.yawrate = ship_defaults.get('YawRate', 8.0)
-            self.sunpitchuptime = ship_defaults.get('SunPitchUp+Time', 0.0)
-            logger.info(f"Loaded default configuration for {ship_type} from default ship cfg file")
-
-        # Add empty entry to ship_configs for future customization
-        if ship_type not in self.ship_configs['Ship_Configs']:
-            self.ship_configs['Ship_Configs'][ship_type] = dict()
-
-        # Step 3: Check if we have custom config in ship_configs.json (skip if forcing defaults)
-        current_ship_cfg = self.ship_configs['Ship_Configs'][ship_type]
-        # Check if the custom config has actual values (not just empty dict)
-        if any(key in current_ship_cfg for key in ['RollRate', 'PitchRate', 'YawRate', 'SunPitchUp+Time']):
-            # Use custom configuration - this means it's been modified and saved to ship_configs.json
-            self.rollrate = current_ship_cfg.get('RollRate', 80.0)
-            self.pitchrate = current_ship_cfg.get('PitchRate', 33.0)
-            self.yawrate = current_ship_cfg.get('YawRate', 8.0)
-            self.sunpitchuptime = current_ship_cfg.get('SunPitchUp+Time', 0.0)
-            logger.info(f"Loaded your custom configuration for {ship_type} from ship_configs.json")
-
-        for spd_dmd in ['Speed0', 'Speed50', 'Speed100', 'SCSpeed0', 'SCSpeed50', 'SCSpeed100']:
-            # Check RPY Calibration
-            if spd_dmd not in current_ship_cfg:
-                self.ap_ckb('log', "WARNING: Perform Roll/Pitch/Yaw Calibration on this ship.")
-                current_ship_cfg[spd_dmd] = dict()
-
-            spd_dmd_dict = current_ship_cfg[spd_dmd]
-            if 'RollRate' not in spd_dmd_dict:
-                self.ap_ckb('log', "WARNING: Perform Roll Calibration on this ship.")
-                # Default roll rates at 5, 45 and 90 deg
-                spd_dmd_dict['RollRate'] = {"5.0": self.rollrate / 2,
-                                            "45.0": self.rollrate,
-                                            "60.0": self.rollrate}
-            if 'PitchRate' not in spd_dmd_dict:
-                self.ap_ckb('log', "WARNING: Perform Pitch Calibration on this ship.")
-                # Default pitch rates at 0.5, 30 and 90 deg
-                spd_dmd_dict['PitchRate'] = {"0.5": self.pitchrate / 2,
-                                             "30.0": self.pitchrate,
-                                             "60.0": self.pitchrate}
-            if 'YawRate' not in spd_dmd_dict:
-                self.ap_ckb('log', "WARNING: Perform Yaw Calibration on this ship.")
-                # Default yaw rates at 0.5, 30 and 90 deg
-                spd_dmd_dict['YawRate'] = {"0.5": self.yawrate / 2,
-                                           "30.0": self.yawrate,
-                                           "60.0": self.yawrate}
+        """Load only legacy non-curve preferences; calibration starts unknown."""
+        self.ap_ckb('log', f"Loading ship configuration for {ship_type}")
+        self.ship_configs['Ship_Configs'].setdefault(ship_type, {})
+        self.sunpitchuptime = self.ship_configs['Ship_Configs'][ship_type].get('SunPitchUp+Time', 0.0)
+        self.speed_demand = None
 
     def update_overlay(self):
         """ Draw the overlay data on the ED Window """
@@ -631,7 +573,7 @@ class EDAutopilot:
         self.debug_overlay = self.config['DebugOverlay']
         self.debug_ocr = self.config['DebugOCR']
         self.debug_images = self.config['DebugImages']
-        self.auto_tune_rpy = self.config['AutoTuneRPYRates']
+        self.auto_tune_rpy = False  # Response profiles are changed only by explicit calibration.
 
     def draw_match_rect(self, img, pt1, pt2, color, thick):
         """ Draws the matching rectangle within the image. """
@@ -946,6 +888,10 @@ class EDAutopilot:
         b_max_val = 0.0
         b_compass_quad = Quad()
         # b_pt = [0.0, 0.0]
+        if full_compass_image is None:
+            return None
+        captured_at = time.monotonic()
+        frame_sequence = getattr(self.scr, '_last_bridge_sequence', None)
         full_compass_image2 = cv2.cvtColor(full_compass_image, cv2.COLOR_BGRA2BGR)
         ml_res = self.mach_learn.model_predict(ModelType.Compass, full_compass_image2, '')
         if ml_res and len(ml_res) > 0:
@@ -1063,7 +1009,9 @@ class EDAutopilot:
                 final_yaw_deg = degrees(math.acos(yaw_pct)) - 270  # X in deg (-90.0 to 90.0, 0.0 in the center)
 
         result = {'x': round(final_x_pct, 4), 'y': round(final_y_pct, 4), 'z': round(final_z_pct, 2),
-                  'roll': round(final_roll_deg, 2), 'pit': round(final_pit_deg, 2), 'yaw': round(final_yaw_deg, 2)}
+                  'roll': round(final_roll_deg, 2), 'pit': round(final_pit_deg, 2), 'yaw': round(final_yaw_deg, 2),
+                  'confidence': min(max_val, n_max_val if final_z_pct > 0 else b_max_val),
+                  'frame_sequence': frame_sequence, 'captured_at': captured_at}
 
         # Draw box around region
         if self.debug_overlay:
@@ -1616,7 +1564,7 @@ class EDAutopilot:
         #  which is dull red, the star field is 'brighter' than the sun, so our sun avoidance could pitch up
         #  endlessly. So we will have a fail_safe_timeout to kick us out of pitch up if we've pitch past 110 degrees,
         #  but we'll add 3 more second for pad in case the user has a higher pitch rate than the vehicle can do
-        fail_safe_timeout = (120/self.pitchrate)+3
+        fail_safe_timeout = 30  # Bounded visual search, independent of any guessed ship rate.
         starttime = time.time()
 
         # if sun in front of us, then keep pitching up until it is below us
@@ -2903,6 +2851,8 @@ class EDAutopilot:
         self.single_waypoint_enabled = False
 
     def set_fsd_assist(self, enable=True):
+        if enable and self.calibration_busy.is_set():
+            raise CalibrationError('Finish or stop ship calibration before starting an assist')
         if not enable and self.fsd_assist_enabled:
             self._request_assist_stop()
         elif enable:
@@ -2910,6 +2860,8 @@ class EDAutopilot:
         self.fsd_assist_enabled = enable
 
     def set_sc_assist(self, enable=True):
+        if enable and self.calibration_busy.is_set():
+            raise CalibrationError('Finish or stop ship calibration before starting an assist')
         if not enable and self.sc_assist_enabled:
             self._request_assist_stop()
         elif enable:
@@ -2917,6 +2869,8 @@ class EDAutopilot:
         self.sc_assist_enabled = enable
 
     def set_waypoint_assist(self, enable=True):
+        if enable and self.calibration_busy.is_set():
+            raise CalibrationError('Finish or stop ship calibration before starting an assist')
         if not enable and self.waypoint_assist_enabled:
             self._request_assist_stop()
         elif enable:
@@ -2924,6 +2878,8 @@ class EDAutopilot:
         self.waypoint_assist_enabled = enable
 
     def set_robigo_assist(self, enable=True):
+        if enable and self.calibration_busy.is_set():
+            raise CalibrationError('Finish or stop ship calibration before starting an assist')
         if not enable and self.robigo_assist_enabled:
             self._request_assist_stop()
         elif enable:
@@ -2931,6 +2887,8 @@ class EDAutopilot:
         self.robigo_assist_enabled = enable
 
     def set_afk_combat_assist(self, enable=True):
+        if enable and self.calibration_busy.is_set():
+            raise CalibrationError('Finish or stop ship calibration before starting an assist')
         if not enable and self.afk_combat_assist_enabled:
             self._request_assist_stop()
         elif enable:
@@ -2938,6 +2896,8 @@ class EDAutopilot:
         self.afk_combat_assist_enabled = enable
 
     def set_dss_assist(self, enable=True):
+        if enable and self.calibration_busy.is_set():
+            raise CalibrationError('Finish or stop ship calibration before starting an assist')
         if not enable and self.dss_assist_enabled:
             self._request_assist_stop()
         elif enable:
@@ -2945,6 +2905,8 @@ class EDAutopilot:
         self.dss_assist_enabled = enable
 
     def set_single_waypoint_assist(self, system: str, station: str, enable=True):
+        if enable and self.calibration_busy.is_set():
+            raise CalibrationError('Finish or stop ship calibration before starting an assist')
         if not enable and self.single_waypoint_enabled:
             self._request_assist_stop()
         elif enable:
@@ -3025,6 +2987,9 @@ class EDAutopilot:
         @return:
         """
         while not self.terminate:
+            if getattr(self, "calibration_busy", None) is not None and self.calibration_busy.is_set():
+                sleep(.1)
+                continue
             # TODO - Remove these show compass/target all the time
             if self.debug_show_compass_overlay:
                 self.get_nav_offset(self.scrReg)
@@ -3033,17 +2998,6 @@ class EDAutopilot:
 
             # TODO - Enable for test
             # self.start_sco_monitoring()
-
-            # Ship calibration functions
-            if self.ship_tst_roll_enabled:
-                self.ship_control.ship_calibrate_roll()
-                self.ship_tst_roll_enabled = False
-            if self.ship_tst_pitch_enabled:
-                self.ship_control.ship_calibrate_pitch()
-                self.ship_tst_pitch_enabled = False
-            if self.ship_tst_yaw_enabled:
-                self.ship_control.ship_calibrate_yaw()
-                self.ship_tst_yaw_enabled = False
 
             if self.fsd_assist_enabled:
                 logger.debug("Running fsd_assist")
@@ -3206,6 +3160,11 @@ class EDAutopilot:
 
             # Check once EDAPGUI loaded to prevent errors logging to the listbox before loaded
             if self.gui_loaded:
+                identity = ShipIdentity.from_journal(self.jn.ship_state())
+                if identity != getattr(self, '_last_calibration_identity', None):
+                    self._last_calibration_identity = identity
+                    self.speed_demand = None
+                    self.ap_ckb('ship_calibration_changed')
                 # Check if ship has changed
                 ship = self.jn.ship_state()['type']
                 # Check if a ship and not a suit (on foot)

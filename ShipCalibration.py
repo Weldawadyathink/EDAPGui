@@ -150,8 +150,10 @@ class ResponseCurve:
         return not self.issues
 
     def predict(self, seconds):
-        if len(self.knots) < 2 or not self.knots[0][0] <= seconds <= self.knots[-1][0]:
+        if len(self.knots) < 2 or not 0 <= seconds <= self.knots[-1][0]:
             raise CalibrationRequired('Pulse is outside measured duration coverage')
+        if seconds <= self.knots[0][0]:
+            return self.knots[0][1] * seconds / self.knots[0][0]
         for (t0, a0), (t1, a1) in zip(self.knots, self.knots[1:]):
             if seconds <= t1:
                 return a0 + (a1 - a0) * (seconds - t0) / (t1 - t0)
@@ -160,8 +162,10 @@ class ResponseCurve:
     def duration_for(self, angle):
         if not self.ready:
             raise CalibrationRequired('; '.join(self.issues))
-        if not math.isfinite(angle) or not self.knots[0][1] <= angle <= self.knots[-1][1]:
+        if not math.isfinite(angle) or not 0 < angle <= self.knots[-1][1]:
             raise CalibrationRequired('Requested angle is outside measured coverage')
+        if angle <= self.knots[0][1]:
+            return self.knots[0][0] * angle / self.knots[0][1]
         for (t0, a0), (t1, a1) in zip(self.knots, self.knots[1:]):
             if angle <= a1:
                 return t0 if a1 == a0 else t0 + (t1-t0) * (angle-a0) / (a1-a0)
@@ -223,7 +227,7 @@ def fit_response(trials):
                           tuple(issues), statistics.median(masses) if masses else None)
     checks = [t for t in trials if t.enabled and t.accepted and t.purpose == 'validation'
               and t.fit_revision == revision and len(knots) >= 2
-              and knots[0][0] <= t.duration <= knots[-1][0]]
+              and 0 < t.duration <= knots[-1][0]]
     errors = [abs(curve.predict(t.duration)-t.degrees) for t in checks]
     if len(checks) < 3 or len({round(t.requested, 4) for t in checks}) < 2:
         issues.append('Need three separate validation pulses at two lengths')
@@ -344,12 +348,6 @@ class ProfileStore:
                 raise CalibrationError('Profile hull does not match the current ship')
             candidate = deepcopy(self.data)
             candidate['hulls'][identity.hull] = pid
-            self._commit(candidate)
-
-    def clear_individual(self, identity):
-        with self._lock:
-            candidate = deepcopy(self.data)
-            candidate['ships'].pop(identity.individual_key, None)
             self._commit(candidate)
 
     def selected(self, identity):
