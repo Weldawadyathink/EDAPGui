@@ -121,29 +121,51 @@ class CalibrationSession:
         self.progress(f'{purpose.title()}: {axis} {direction:+}, {duration:.3f}s', None)
         before, noise1 = self.stable(axis)
         self.check()
-        timing = self.pulse(axis, direction, duration)
-        released = self.clock()
-        self.check()
-        after, noise2 = self.stable(axis)
-        response = angle_delta(before.angle(axis), after.angle(axis))*direction
-        noise = noise1+noise2
-        reason = ''
-        if response < -max(.5, 3*noise):
-            raise CalibrationError('Response is opposite the expected direction; inspect binding/vision before continuing')
-        if abs(response) > self.policy.maximum_response:
-            raise CalibrationError('Pulse exceeded the angular response limit')
-        if abs(before.invariant(axis)-after.invariant(axis)) > .035:
-            raise CalibrationError('Cross-axis motion or reference mismatch detected')
-        if response <= max(.3, 3*noise):
-            reason = 'Movement is below the measured noise floor'
-        elif timing['uncertainty'] > max(.008, .2*duration):
-            reason = 'Input timing uncertainty is too large'
+        started = self.clock()
+        timing = None
+        released = started
+        response, noise, reason = 0.0, noise1, ''
+        failure = None
+        try:
+            timing = self.pulse(axis, direction, duration)
+            released = self.clock()
+            self.check()
+            after, noise2 = self.stable(axis)
+            response = angle_delta(before.angle(axis), after.angle(axis))*direction
+            noise += noise2
+            if response < -max(.5, 3*noise):
+                raise CalibrationError('Response is opposite the expected direction; inspect binding/vision before continuing')
+            if abs(response) > self.policy.maximum_response:
+                raise CalibrationError('Pulse exceeded the angular response limit')
+            if abs(before.invariant(axis)-after.invariant(axis)) > .035:
+                raise CalibrationError('Cross-axis motion or reference mismatch detected')
+            if response <= max(.3, 3*noise):
+                reason = 'Movement is below the measured noise floor'
+            elif timing['uncertainty'] > max(.008, .2*duration):
+                reason = 'Input timing uncertainty is too large'
+        except (CalibrationError, InterruptedError, RuntimeError, OSError) as exc:
+            failure = exc
+            reason = str(exc) or type(exc).__name__
+            if timing is None:
+                # No reliable hold interval was returned. Keep a rejected
+                # diagnostic record; these bounds never become training data.
+                timing = {'duration': max(.001, min(3, self.clock()-started)),
+                          'uncertainty': 3}
+                released = self.clock()
+                reason += ' (input duration unavailable; recorded elapsed attempt only)'
         trial = Trial(axis, direction, self.context.key, duration, timing['duration'], response, noise,
-                      self.clock()-released, purpose=purpose, accepted=not reason, reason=reason,
+                      min(30, max(0, self.clock()-released)), purpose=purpose, accepted=not reason, reason=reason,
                       timing_uncertainty=timing['uncertainty'], mass=self.context.mass,
                       fit_revision=revision, trace=self.trace, session=self.session)
-        trial = self.store.add(self.pid, trial, self.identity)
+        try:
+            trial = self.store.add(self.pid, trial, self.identity)
+        except (CalibrationError, OSError) as persist_error:
+            if failure is not None:
+                raise failure from persist_error
+            raise
         self.progress(reason or f'Measured {response:.2f}°', trial)
+        if failure is not None:
+            raise failure
         return trial
 
     def run(self, axis):

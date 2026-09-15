@@ -81,19 +81,25 @@ class LiveCalibration:
 
     @contextmanager
     def reserve(self):
-        if self.ap.calibration_busy.is_set():
-            raise CalibrationError('Another ship calibration is already running')
-        if any(getattr(self.ap, name, False) for name in ASSISTS):
-            raise CalibrationError('Stop all flight assists before calibrating')
-        self.ap.calibration_busy.set()
+        with self.ap._resource_lock:
+            if self.ap.calibration_busy.is_set():
+                raise CalibrationError('Another ship calibration is already running')
+            if any(getattr(self.ap, name, False) for name in ASSISTS):
+                raise CalibrationError('Stop all flight assists before calibrating')
+            self.ap.calibration_busy.set()
         try:
             with self.ap.keys.exclusive_input():
-                # A previously dispatched manual command may still be unwinding.
-                self.ap.raise_if_stop_requested()
-                yield
+                try:
+                    # A previously dispatched manual command may still be unwinding.
+                    self.ap.raise_if_stop_requested()
+                    yield
+                finally:
+                    # Release while ownership is still exclusive so a new
+                    # command cannot be mistaken for calibration input.
+                    self.ap.keys.release_all_keys()
         finally:
-            self.ap.keys.release_all_keys()
-            self.ap.calibration_busy.clear()
+            with self.ap._resource_lock:
+                self.ap.calibration_busy.clear()
 
     def pulse(self, axis, direction, duration):
         return self.ap.keys.pulse(BINDINGS[axis][direction > 0], duration)

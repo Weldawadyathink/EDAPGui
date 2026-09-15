@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import threading
+import sys
 from functools import wraps
 from contextlib import contextmanager
 import time
@@ -467,7 +468,8 @@ class EDKeys:
         up_done = False
         try:
             for modifier in key['mods']:
-                PressKey(modifier)
+                if PressKey(modifier) == 0:
+                    raise RuntimeError('Modifier key-down was not delivered')
                 self._interruptible_sleep(self.key_mod_delay)
             self._raise_if_stop_requested()
             down_start = time.monotonic()
@@ -483,10 +485,19 @@ class EDKeys:
             return {'duration': (up_start+up_end-down_start-down_end)/2,
                     'uncertainty': (down_end-down_start+up_end-up_start)/2}
         finally:
-            if not up_done:
-                ReleaseKey(key['key'])
-            for modifier in reversed(key['mods']):
-                ReleaseKey(modifier)
+            # Attempt the entire release chord even when one OS call fails.
+            # Preserve a pending stop/delivery exception after cleanup.
+            pending_error = sys.exc_info()[0] is not None
+            release_failed = False
+            releases = ([] if up_done else [key['key']]) + list(reversed(key['mods']))
+            for code in releases:
+                try:
+                    if ReleaseKey(code) == 0:
+                        release_failed = True
+                except Exception:
+                    release_failed = True
+            if release_failed and not pending_error:
+                raise RuntimeError('One or more pulse keys could not be released')
 
     def release_all_keys(self):
         """Release all modifier keys and any currently tracked key presses to prevent stuck keys.

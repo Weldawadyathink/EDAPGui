@@ -1,6 +1,6 @@
 from __future__ import annotations
 from CooperativeStop import StopEvent, cooperative_command
-from ShipCalibration import ProfileStore, ShipIdentity, CalibrationError
+from ShipCalibration import CalibrationError, ProfileStore, ShipIdentity
 
 import math
 import threading
@@ -2850,70 +2850,46 @@ class EDAutopilot:
         self.dss_assist_enabled = False
         self.single_waypoint_enabled = False
 
+    def _set_assist_enabled(self, attribute, enable):
+        """Atomically arbitrate assist startup against calibration input ownership."""
+        with self._resource_lock:
+            if enable and self.calibration_busy.is_set():
+                raise CalibrationError('Finish or stop ship calibration before starting an assist')
+            if not enable and getattr(self, attribute):
+                self._request_assist_stop()
+            elif enable:
+                self.stop_event.clear()
+            setattr(self, attribute, enable)
+
     def set_fsd_assist(self, enable=True):
-        if enable and self.calibration_busy.is_set():
-            raise CalibrationError('Finish or stop ship calibration before starting an assist')
-        if not enable and self.fsd_assist_enabled:
-            self._request_assist_stop()
-        elif enable:
-            self.stop_event.clear()
-        self.fsd_assist_enabled = enable
+        self._set_assist_enabled('fsd_assist_enabled', enable)
 
     def set_sc_assist(self, enable=True):
-        if enable and self.calibration_busy.is_set():
-            raise CalibrationError('Finish or stop ship calibration before starting an assist')
-        if not enable and self.sc_assist_enabled:
-            self._request_assist_stop()
-        elif enable:
-            self.stop_event.clear()
-        self.sc_assist_enabled = enable
+        self._set_assist_enabled('sc_assist_enabled', enable)
 
     def set_waypoint_assist(self, enable=True):
-        if enable and self.calibration_busy.is_set():
-            raise CalibrationError('Finish or stop ship calibration before starting an assist')
-        if not enable and self.waypoint_assist_enabled:
-            self._request_assist_stop()
-        elif enable:
-            self.stop_event.clear()
-        self.waypoint_assist_enabled = enable
+        self._set_assist_enabled('waypoint_assist_enabled', enable)
 
     def set_robigo_assist(self, enable=True):
-        if enable and self.calibration_busy.is_set():
-            raise CalibrationError('Finish or stop ship calibration before starting an assist')
-        if not enable and self.robigo_assist_enabled:
-            self._request_assist_stop()
-        elif enable:
-            self.stop_event.clear()
-        self.robigo_assist_enabled = enable
+        self._set_assist_enabled('robigo_assist_enabled', enable)
 
     def set_afk_combat_assist(self, enable=True):
-        if enable and self.calibration_busy.is_set():
-            raise CalibrationError('Finish or stop ship calibration before starting an assist')
-        if not enable and self.afk_combat_assist_enabled:
-            self._request_assist_stop()
-        elif enable:
-            self.stop_event.clear()
-        self.afk_combat_assist_enabled = enable
+        self._set_assist_enabled('afk_combat_assist_enabled', enable)
 
     def set_dss_assist(self, enable=True):
-        if enable and self.calibration_busy.is_set():
-            raise CalibrationError('Finish or stop ship calibration before starting an assist')
-        if not enable and self.dss_assist_enabled:
-            self._request_assist_stop()
-        elif enable:
-            self.stop_event.clear()
-        self.dss_assist_enabled = enable
+        self._set_assist_enabled('dss_assist_enabled', enable)
 
     def set_single_waypoint_assist(self, system: str, station: str, enable=True):
-        if enable and self.calibration_busy.is_set():
-            raise CalibrationError('Finish or stop ship calibration before starting an assist')
-        if not enable and self.single_waypoint_enabled:
-            self._request_assist_stop()
-        elif enable:
-            self.stop_event.clear()
-        self._single_waypoint_system = system
-        self._single_waypoint_station = station
-        self.single_waypoint_enabled = enable
+        with self._resource_lock:
+            if enable and self.calibration_busy.is_set():
+                raise CalibrationError('Finish or stop ship calibration before starting an assist')
+            if not enable and self.single_waypoint_enabled:
+                self._request_assist_stop()
+            elif enable:
+                self.stop_event.clear()
+            self._single_waypoint_system = system
+            self._single_waypoint_station = station
+            self.single_waypoint_enabled = enable
 
     def set_cv_view(self, enable=True, x=0, y=0):
         self.cv_view = enable
@@ -3013,6 +2989,8 @@ class EDAutopilot:
                     fin = self.fsd_assist(self.scrReg)
                 except (EDAP_Interrupt, InterruptedError):
                     logger.debug("Caught stop exception")
+                except CalibrationError as e:
+                    self.ap_ckb('log+vce', f'FSD Assist stopped: {e}. Open Ship calibration for details.')
                 except Exception as e:
                     logger.debug("FSD Assist trapped generic:"+str(e))
                     print("Trapped generic:"+str(e))
@@ -3045,6 +3023,8 @@ class EDAutopilot:
                     self.sc_assist(self.scrReg)
                 except (EDAP_Interrupt, InterruptedError):
                     logger.debug("Caught stop exception")
+                except CalibrationError as e:
+                    self.ap_ckb('log+vce', f'SC Assist stopped: {e}. Open Ship calibration for details.')
                 except Exception as e:
                     print("Trapped generic:"+str(e))
                     logger.debug("SC Assist trapped generic:"+str(e))
@@ -3071,6 +3051,8 @@ class EDAutopilot:
                     self.waypoint_assist(self.keys, self.scrReg)
                 except (EDAP_Interrupt, InterruptedError):
                     logger.debug("Caught stop exception")
+                except CalibrationError as e:
+                    self.ap_ckb('log+vce', f'Waypoint Assist stopped: {e}. Open Ship calibration for details.')
                 except Exception as e:
                     print("Trapped generic:"+str(e))
                     logger.debug("Waypoint Assist trapped generic:"+str(e))
@@ -3091,6 +3073,8 @@ class EDAutopilot:
                     self.robigo_assist()
                 except (EDAP_Interrupt, InterruptedError):
                     logger.debug("Caught stop exception")
+                except CalibrationError as e:
+                    self.ap_ckb('log+vce', f'Robigo Assist stopped: {e}. Open Ship calibration for details.')
                 except Exception as e:
                     print("Trapped generic:"+str(e))
                     logger.debug("Robigo Assist trapped generic:"+str(e))
@@ -3109,6 +3093,8 @@ class EDAutopilot:
                     self.afk_combat_loop()
                 except (EDAP_Interrupt, InterruptedError):
                     logger.debug("Stopping afk_combat")
+                except CalibrationError as e:
+                    self.ap_ckb('log+vce', f'AFK Assist stopped: {e}. Open Ship calibration for details.')
                 except Exception as e:
                     print("Trapped generic:" + str(e))
                     logger.debug("AFK Combat Assist trapped generic:" + str(e))
@@ -3129,6 +3115,8 @@ class EDAutopilot:
                     self.dss_assist()
                 except (EDAP_Interrupt, InterruptedError):
                     logger.debug("Stopping DSS Assist")
+                except CalibrationError as e:
+                    self.ap_ckb('log+vce', f'DSS Assist stopped: {e}. Open Ship calibration for details.')
                 except Exception as e:
                     print("Trapped generic:" + str(e))
                     logger.debug("DSS Assist trapped generic:" + str(e))
@@ -3146,6 +3134,8 @@ class EDAutopilot:
                     self.single_waypoint_assist()
                 except (EDAP_Interrupt, InterruptedError):
                     logger.debug("Stopping Single Waypoint Assist")
+                except CalibrationError as e:
+                    self.ap_ckb('log+vce', f'Waypoint Assist stopped: {e}. Open Ship calibration for details.')
                 except Exception as e:
                     print("Trapped generic:" + str(e))
                     logger.debug("Single Waypoint Assist trapped generic:" + str(e))

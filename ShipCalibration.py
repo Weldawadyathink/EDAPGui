@@ -111,6 +111,8 @@ class Trial:
     timestamp: str = field(default_factory=now_iso)
 
     def validate(self):
+        if not isinstance(self.id, str) or not self.id:
+            raise CalibrationError('Invalid trial id')
         if self.axis not in AXES or self.direction not in (-1, 1) or self.purpose not in ('fit', 'validation'):
             raise CalibrationError('Invalid trial axis, direction or purpose')
         if not isinstance(self.context, str) or not self.context:
@@ -123,7 +125,7 @@ class Trial:
         finite(self.timing_uncertainty, 0, 3, 'timing uncertainty')
         if not all(isinstance(v, bool) for v in (self.accepted, self.enabled)):
             raise CalibrationError('Invalid trial inclusion flag')
-        if len(self.trace) > 500:
+        if not isinstance(self.trace, list) or len(self.trace) > 500:
             raise CalibrationError('Trial trace is too large')
         if self.mass is not None:
             finite(self.mass, .01, 100000, 'trial mass')
@@ -260,11 +262,17 @@ class ProfileStore:
             data = deepcopy(data)
             data['schema'] = SCHEMA_VERSION
             data.pop('ships', None)
+            if not isinstance(data.get('profiles'), dict):
+                raise CalibrationError('Invalid profiles collection')
             for profile in data.get('profiles', {}).values():
+                if not isinstance(profile, dict) or not isinstance(profile.get('trials'), list):
+                    raise CalibrationError('Invalid calibration profile')
                 profile.setdefault('updated', profile.get('created', now_iso()))
                 profile.setdefault('last_ship_id', None)
                 profile.setdefault('last_ship_name', '')
                 for trial in profile.get('trials', []):
+                    if not isinstance(trial, dict):
+                        raise CalibrationError('Invalid calibration trial')
                     trial.setdefault('loadout', profile.get('loadout', ''))
                     trial.setdefault('ship_id', profile.get('last_ship_id'))
                     trial.setdefault('ship_name', profile.get('last_ship_name', ''))
@@ -278,10 +286,18 @@ class ProfileStore:
             if not isinstance(data.get(key), dict):
                 raise CalibrationError(f'Invalid {key} collection')
         for pid, profile in data['profiles'].items():
-            if profile['id'] != pid or not isinstance(profile['name'], str) or not profile['hull']:
+            if not isinstance(profile, dict) or profile.get('id') != pid \
+                    or not isinstance(profile.get('name'), str) \
+                    or not isinstance(profile.get('hull'), str) or not profile['hull'] \
+                    or not isinstance(profile.get('loadout'), str) \
+                    or not isinstance(profile.get('trials'), list):
                 raise CalibrationError('Invalid calibration profile')
+            ids = set()
             for trial in profile['trials']:
                 Trial(**trial).validate()
+                if trial['id'] in ids:
+                    raise CalibrationError('Duplicate trial id')
+                ids.add(trial['id'])
         if any(pid not in data['profiles'] for pid in data['hulls'].values()):
             raise CalibrationError('Profile assignment refers to a missing profile')
         for hull, pid in data['hulls'].items():
@@ -338,6 +354,17 @@ class ProfileStore:
         with self._lock:
             candidate = deepcopy(self.data)
             candidate['profiles'][pid]['name'] = name.strip()
+            self._commit(candidate)
+
+    def delete(self, pid):
+        with self._lock:
+            candidate = deepcopy(self.data)
+            if pid not in candidate['profiles']:
+                raise CalibrationError('Select a calibration profile')
+            candidate['profiles'].pop(pid)
+            candidate['hulls'] = {
+                hull: assigned for hull, assigned in candidate['hulls'].items()
+                if assigned != pid}
             self._commit(candidate)
 
     def assign(self, pid, identity):

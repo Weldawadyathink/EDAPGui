@@ -10,8 +10,9 @@ import EDShipControl as ship_control_module
 from EDKeys import EDKeys
 from EDShipControl import EDShipControl
 from EDAP_data import FlagsInMainShip
+from ED_AP import EDAutopilot
 from ShipCalibration import (
-    CalibrationRequired, Conditions, ProfileStore, ShipIdentity, Trial,
+    CalibrationError, CalibrationRequired, Conditions, ProfileStore, ShipIdentity, Trial,
     fit_response, loadout_fingerprint,
 )
 from ShipCalibrationRuntime import operating_conditions
@@ -140,8 +141,25 @@ class ProfileStoreTests(unittest.TestCase):
         self.assertNotIn('ships', migrated.data)
         self.assertEqual(migrated.selected(self.original)['id'], pid)
 
+    def test_deleting_active_profile_clears_hull_assignment(self):
+        pid = self.store.create('Python', 'python')
+        self.store.assign(pid, self.original)
+        self.store.delete(pid)
+        self.assertIsNone(self.store.selected(self.original))
+
 
 class CalibrationRuntimeTests(unittest.TestCase):
+    def test_assist_cannot_start_while_calibration_owns_resources(self):
+        ap = EDAutopilot.__new__(EDAutopilot)
+        ap._resource_lock = threading.Lock()
+        ap.calibration_busy = threading.Event()
+        ap.calibration_busy.set()
+        ap.stop_event = threading.Event()
+        ap.fsd_assist_enabled = False
+        with self.assertRaises(CalibrationError):
+            ap.set_fsd_assist(True)
+        self.assertFalse(ap.fsd_assist_enabled)
+
     def test_rotation_can_use_validated_origin_for_small_correction(self):
         curve = mock.Mock()
         curve.knots = ((.05, 1.0), (.20, 8.0))
