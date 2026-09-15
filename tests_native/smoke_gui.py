@@ -19,6 +19,7 @@ import ED_AP as ap_module
 from Screen import BRIDGE_HEADER
 import MacOSBridge
 import EDKeys
+from ShipCalibration import Trial
 
 with tempfile.TemporaryDirectory(prefix='edap gui smoke ') as directory:
     work = Path(directory)
@@ -48,8 +49,38 @@ with tempfile.TemporaryDirectory(prefix='edap gui smoke ') as directory:
         root.withdraw()
         app = gui_module.APGui(root)
         root.update()
+        # Exercise profile editing/automatic selection against copied data.
+        # Synthetic journal identity changes only this no-engine process.
+        app.ed_ap.jn.ship.update(type='python', ship_id=101,
+            ship_name='Smoke Python', loadout_fingerprint='smoke-loadout')
+        tab = app.ship_calibration_tab
+        tab.refresh()
+        tab.name_var.set('Smoke profile')
+        tab.create()
+        python_pid = tab.pid
+        tab.assign()
+        trial = tab.store.add(python_pid, Trial('roll', 1, 'Speed0/ENG2',
+            .04, .04, 1, .1, .5), tab.identity())
+        tab.render()
+        assert tab.samples.exists(trial.id)
+        tab.samples.selection_set(trial.id)
+        tab.toggle()
+        assert not tab.store.profile(python_pid)['trials'][-1]['enabled']
+        app.ed_ap.jn.ship.update(type='anaconda', ship_id=102)
+        tab.refresh()
+        tab.name_var.set('Smoke Anaconda')
+        tab.create()
+        tab.assign()
+        anaconda_pid = tab.pid
+        assert anaconda_pid != python_pid
+        app.ed_ap.jn.ship.update(type='python', ship_id=103)
+        tab.refresh()
+        assert tab.pid == python_pid
+        assert tab.store.selected(tab.identity())['id'] == python_pid
+        assert not tab.curve().ready
+        root.update()
         app.stop_all_assists()
         root.update()
         app.close_window()
         root.update()
-        print('PASS: full Tk GUI constructed, drained callbacks, stopped, and destroyed with input blocked')
+        print('PASS: full Tk GUI, profile editing, hull switching, callbacks, stop and shutdown; input blocked')
