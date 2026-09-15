@@ -126,7 +126,7 @@ guard let arguments = Arguments() else {
 }
 
 guard CGPreflightScreenCaptureAccess() || CGRequestScreenCaptureAccess() else {
-    fail("Screen Recording permission is required. Enable it for MoltenVR (or the launching terminal) in System Settings > Privacy & Security > Screen & System Audio Recording, then relaunch EDAPGui.", code: 77)
+    fail("Screen Recording permission is required. Enable it for EDAPGui (or the launching terminal) in System Settings > Privacy & Security > Screen & System Audio Recording, then relaunch EDAPGui.", code: 77)
 }
 
 let contentSemaphore = DispatchSemaphore(value: 0)

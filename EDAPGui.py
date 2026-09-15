@@ -1482,6 +1482,30 @@ def main():
     bg_color = "#1c1c1c" if sv_ttk.get_theme() == "dark" else "#fafafa"
     style.configure("TNotebook.Tab", focuscolor=bg_color)
 
+    if sys.platform == "darwin":
+        # LaunchServices starts the wrapper app, then the native launcher starts
+        # Python.app. Explicitly activate that second process so Tk does not
+        # open successfully behind Elite's borderless window.
+        try:
+            subprocess.run(
+                ["/usr/bin/osascript", "-e", 'tell application id "org.python.python" to activate'],
+                check=False, capture_output=True, timeout=2)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+
+        root.deiconify()
+        root.lift()
+        root.attributes("-topmost", True)
+        root.focus_force()
+
+        def clear_startup_topmost():
+            try:
+                root.attributes("-topmost", False)
+            except tk.TclError:
+                pass
+
+        root.after(750, clear_startup_topmost)
+
     # if sys.platform == "win32":
     #     apply_theme_to_titlebar(root)
 

@@ -21,6 +21,18 @@ CAPTURE_HEIGHT="${EDAP_CAPTURE_HEIGHT:-1440}"
 CAPTURE_FPS="${EDAP_CAPTURE_FPS:-15}"
 ELITE_TITLE="${EDAP_ELITE_WINDOW_TITLE:-Elite - Dangerous (CLIENT)}"
 
+show_launch_failure() {
+  local message="$1"
+  print -u2 -r -- "$message"
+  if [[ "${EDAP_SUPPRESS_LAUNCH_ALERT:-0}" != "1" ]]; then
+    /usr/bin/osascript \
+      -e 'on run argv' \
+      -e 'display alert "EDAPGui could not be launched" message (item 1 of argv) as critical' \
+      -e 'end run' \
+      "$message" >/dev/null 2>&1 || true
+  fi
+}
+
 mkdir -p "$RUNTIME_DIR"
 if ! mkdir "$LOCK_DIR" 2>/dev/null; then
   lock_pid=""
@@ -72,10 +84,16 @@ capture_pid=$!
 capture_ready=0
 for _ in {1..80}; do
   if ! kill -0 "$capture_pid" >/dev/null 2>&1; then
+    set +e
     wait "$capture_pid"
-    exit $?
+    capture_status=$?
+    set -e
+    capture_error=$(tail -n 1 "$LOG_FILE" 2>/dev/null || true)
+    [[ -z "$capture_error" ]] && capture_error="The native capture helper exited before producing a frame. See $LOG_FILE"
+    show_launch_failure "$capture_error"
+    exit "$capture_status"
   fi
-  sequence=$(od -An -tu8 -N8 "$CAPTURE_FILE" 2>/dev/null | tr -d ' ')
+  sequence=$(od -An -tu8 -N8 "$CAPTURE_FILE" 2>/dev/null | tr -d ' ' || true)
   if [[ -n "$sequence" && "$sequence" -gt 0 ]]; then
     capture_ready=1
     break
@@ -83,7 +101,7 @@ for _ in {1..80}; do
   sleep 0.1
 done
 if [[ "$capture_ready" -ne 1 ]]; then
-  print -u2 -- "Timed out waiting for the first Elite window frame. See $LOG_FILE"
+  show_launch_failure "Timed out waiting for the first Elite window frame. Make sure Elite is visible, then try again. See $LOG_FILE"
   exit 1
 fi
 

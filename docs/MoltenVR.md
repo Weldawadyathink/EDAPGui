@@ -78,6 +78,10 @@ personal Applications folder. Raycast and Spotlight will then find it by the
 name `EDAPGui`. The app invokes the same native launcher described above; it
 does not run Python inside Wine.
 
+Pass `/Applications` to the installer to place it system-wide. When an Apple
+Development signing identity is available, the bridge build uses it so Screen
+Recording and Accessibility grants survive local recompiles.
+
 ## Rollback
 
 The launcher stored in the MoltenVR bottle runs this source checkout's native
