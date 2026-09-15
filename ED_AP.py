@@ -175,7 +175,7 @@ class EDAutopilot:
         self.afk_combat = AFK_Combat(self, self.keys, self.jn, self.vce)
         self.waypoint = EDWayPoint(self, cb, self.jn.ship_state()['odyssey'])
         self.robigo = Robigo(self)
-        self.status = StatusParser()
+        self.status = StatusParser(stop_event=self.stop_event)
         self.nav_route = NavRouteParser()
         self.ship_control = EDShipControl(self, self.scr, self.keys, cb)
         self.internal_panel = EDInternalStatusPanel(self, self.scr, self.keys, cb)
@@ -797,9 +797,9 @@ class EDAutopilot:
         if so, announce finding and log the type of world found. """
         # open fss
         self.set_throttle_0()
-        sleep(0.1)
+        self._interruptible_sleep(0.1)
         self.keys.send('ExplorationFSSEnter')
-        sleep(2.5)
+        self._interruptible_sleep(2.5)
 
         # look for a circle or signal in this region
         elw_image, (minVal, maxVal, minLoc, maxLoc), match = scr_reg.match_template_in_region('fss', 'elw')
@@ -891,8 +891,9 @@ class EDAutopilot:
 
         # Keep setting speed to zero to submit while in supercruise or system jump.
         while self.status.get_flag(FlagsSupercruise) or self.status.get_flag2(Flags2FsdHyperdriveCharging):
+            self.raise_if_stop_requested()
             self.set_throttle_0()  # Submit.
-            sleep(0.5)
+            self._interruptible_sleep(0.5)
 
         # Set speed to 100%.
         self.set_throttle_100()
@@ -902,6 +903,7 @@ class EDAutopilot:
 
         # Boost while waiting for cooldown to complete.
         while not self.status.wait_for_flag_off(FlagsFsdCooldown, timeout=1):
+            self.raise_if_stop_requested()
             self.keys.send('UseBoostJuice')
 
         # Ensure we are in supercruise
@@ -1478,7 +1480,7 @@ class EDAutopilot:
             # Sleep upto 1 sec max. If OCR takes > 1 sec, there will be no delay
             elapsed_time = time.time() - start_time
             if elapsed_time < 1.0:
-                sleep(1.0 - elapsed_time)
+                self._interruptible_sleep(1.0 - elapsed_time)
 
         # Reset disengage latch, in case it was latched.
         self._sc_disengage_active = False
@@ -1510,12 +1512,12 @@ class EDAutopilot:
         """
         # if not in normal space, give a few more sections as at times it will take a little bit
         if self.jn.ship_state()['status'] != "in_space":
-            sleep(3)  # sleep a little longer
+            self._interruptible_sleep(3)  # sleep a little longer
 
         if self.jn.ship_state()['status'] != "in_space":
             logger.error('In dock(), after wait, but still not in_space')
 
-        sleep(5)  # wait 5 seconds to get to 7.5km to request docking
+        self._interruptible_sleep(5)  # wait 5 seconds to get to 7.5km to request docking
         self.set_throttle_50()
 
         if self.jn.ship_state()['status'] != "in_space":
@@ -1523,15 +1525,15 @@ class EDAutopilot:
             logger.error('In dock(), after long wait, but still not in_space')
             raise Exception('Docking failed (not in space)')
 
-        sleep(12)
+        self._interruptible_sleep(12)
         # At this point (of sleep()) we should be < 7.5km from the station.  Go 0 speed
         # if we get docking granted ED's docking computer will take over
         self.set_throttle_0(repeat=2)
-        sleep(3)  # Wait for ship to come to stop
+        self._interruptible_sleep(3)  # Wait for ship to come to stop
         self.ap_ckb('log+vce', "Initiating Docking Procedure")
         # Request docking through Nav panel.
         self.request_docking()
-        sleep(1)
+        self._interruptible_sleep(1)
 
         tries = self.config['DockingRetries']
         granted = False
@@ -1541,14 +1543,14 @@ class EDAutopilot:
             for i in range(tries):
                 if self.jn.ship_state()['no_dock_reason'] == "Distance":
                     self.set_throttle_50()
-                    sleep(5)
+                    self._interruptible_sleep(5)
                     self.set_throttle_0(repeat=2)
-                sleep(3)  # Wait for ship to come to stop
+                self._interruptible_sleep(3)  # Wait for ship to come to stop
                 # Request docking through Nav panel.
                 self.request_docking()
                 self.set_throttle_0(repeat=2)
 
-                sleep(1.5)
+                self._interruptible_sleep(1.5)
                 if self.jn.ship_state()['status'] == "dockinggranted":
                     granted = True
                     # Go back to navigation tab
@@ -1565,18 +1567,18 @@ class EDAutopilot:
             self.ap_ckb('log+vce', "Docking request granted")
             # allow auto dock to take over
             for i in range(self.config['WaitForAutoDockTimer']):
-                sleep(1)
+                self._interruptible_sleep(1)
                 if self.jn.ship_state()['status'] == "in_station":
                     # go to top item, select (which should be refuel)
                     self.keys.send('UI_Up', hold=3)
                     self.keys.send('UI_Select')  # Refuel
-                    sleep(0.5)
+                    self._interruptible_sleep(0.5)
                     self.keys.send('UI_Right')  # Repair
                     self.keys.send('UI_Select')
-                    sleep(0.5)
+                    self._interruptible_sleep(0.5)
                     self.keys.send('UI_Right')  # Ammo
                     self.keys.send('UI_Select')
-                    sleep(0.5)
+                    self._interruptible_sleep(0.5)
                     self.keys.send("UI_Left", repeat=2)  # back to fuel
                     return
 
@@ -1597,7 +1599,7 @@ class EDAutopilot:
         """
         logger.debug('align= avoid sun')
 
-        sleep(0.5)
+        self._interruptible_sleep(0.5)
 
         # close to core the 'sky' is very bright with close stars, if we are pitch due to a non-scoopable star
         #  which is dull red, the star field is 'brighter' than the sun, so our sun avoidance could pitch up
@@ -1622,16 +1624,16 @@ class EDAutopilot:
                 print("sun avoid failsafe timeout")
                 break
 
-        sleep(0.35)                 # up slightly so not to overheat when scooping
+        self._interruptible_sleep(0.35)  # up slightly so not to overheat when scooping
         # Some ships heat up too much and need pitch up a little further
         if self.sunpitchuptime > 0.0:
-            sleep(self.sunpitchuptime)
+            self._interruptible_sleep(self.sunpitchuptime)
         self.keys.send('PitchUpButton', state=0)
 
         # Some ships run cool so need to pitch down a little if we are scooping
         if scooping and self.sunpitchuptime < 0.0:
             self.keys.send('PitchDownButton', state=1)
-            sleep(-1.0 * self.sunpitchuptime)
+            self._interruptible_sleep(-1.0 * self.sunpitchuptime)
             self.keys.send('PitchDownButton', state=0)
 
     def compass_align(self, scr_reg) -> bool:
@@ -1737,7 +1739,7 @@ class EDAutopilot:
                 else:
                     break
 
-            sleep(.1)
+            self._interruptible_sleep(.1)
             if off is not None:
                 logger.debug(f"Compass position: yaw: {str(off['yaw'])} pit: {str(off['pit'])}")
 
@@ -1766,7 +1768,7 @@ class EDAutopilot:
 
         if not self._is_in_supercruise_or_space():
             for _ in range(10):
-                sleep(0.5)
+                self._interruptible_sleep(0.5)
                 if self._is_in_supercruise_or_space():
                     break
             else:
@@ -1988,7 +1990,7 @@ class EDAutopilot:
 
         # Speed away
         self.set_throttle_100()
-        sleep(15)
+        self._interruptible_sleep(15)
 
         self.set_throttle_0()
         self.ship_control.pitch_up_down(90)
@@ -2006,7 +2008,7 @@ class EDAutopilot:
                 logger.debug('position=scanning')
                 self.keys.send('SecondaryFire', state=1)
 
-            sleep(7)  # roughly 6 seconds for DSS
+            self._interruptible_sleep(7)  # roughly 6 seconds for DSS
 
             # stop pressing the Scanner button
             if self.config['DSSButton'] == 'Primary':
@@ -2022,15 +2024,15 @@ class EDAutopilot:
         """ Performs menu action to log out of game """
         self.update_ap_status("Logout")
         self.keys.send_key('Down', SCANCODE["Key_Escape"])
-        sleep(0.5)
+        self._interruptible_sleep(0.5)
         self.keys.send_key('Up', SCANCODE["Key_Escape"])
-        sleep(0.5)
+        self._interruptible_sleep(0.5)
         self.keys.send('UI_Up')
-        sleep(0.5)
+        self._interruptible_sleep(0.5)
         self.keys.send('UI_Select')
-        sleep(0.5)
+        self._interruptible_sleep(0.5)
         self.keys.send('UI_Select')
-        sleep(0.5)
+        self._interruptible_sleep(0.5)
         self.update_ap_status("Idle")
 
     def position(self, scr_reg, did_refuel=True):
@@ -2054,15 +2056,15 @@ class EDAutopilot:
         if self.config["EnableRandomness"]:
             pause_time = pause_time+random.randint(0, 3)
         # need time to get away from the Sun so heat will dissipate before we use FSD
-        sleep(pause_time)
+        self._interruptible_sleep(pause_time)
 
         if self.config["ElwScannerEnable"]:
             self.fss_detect_elw(scr_reg)
             if self.config["EnableRandomness"]:
-                sleep(random.randint(0, 3))
-            sleep(3)
+                self._interruptible_sleep(random.randint(0, 3))
+            self._interruptible_sleep(3)
         else:
-            sleep(5)  # since not doing FSS, need to give a little more time to get away from Sun, for heat
+            self._interruptible_sleep(5)  # since not doing FSS, need to give a little more time to get away from Sun, for heat
 
         self.vce.say("Maneuvering")
 
@@ -2090,7 +2092,7 @@ class EDAutopilot:
             if not self._is_in_supercruise_or_space():
                 logger.error('Not ready to FSD jump. jump=err1')
                 raise Exception('not ready to jump')
-            sleep(0.5)
+            self._interruptible_sleep(0.5)
             logger.debug('jump= start fsd')
 
             # Initiate FSD Jump
@@ -2117,7 +2119,7 @@ class EDAutopilot:
             logger.debug('jump= speed 0')
             self.jump_cnt = self.jump_cnt+1
             self.set_throttle_0(repeat=3)  # Let's be triply sure that we set speed to 0% :)
-            sleep(1)  # wait 1 sec after jump to allow graphics to stablize and accept inputs
+            self._interruptible_sleep(1)  # wait 1 sec after jump to allow graphics to stablize and accept inputs
             logger.debug('jump=complete')
 
             # Start SCO monitoring ready when we drop back to SC.
@@ -2169,9 +2171,9 @@ class EDAutopilot:
 
             # mnvr into position
             self.set_throttle_100()
-            sleep(5)
+            self._interruptible_sleep(5)
             self.set_throttle_50()
-            sleep(1.7)
+            self._interruptible_sleep(1.7)
             self.set_throttle_0(repeat=3)
 
             self.refuel_cnt += 1
@@ -2180,6 +2182,7 @@ class EDAutopilot:
             # if we don't scoop first 5 tons with 40 sec break, since not scooping or not fast enough or not at all, then abort
             startime = time.time()
             while not self.jn.ship_state()['is_scooping'] and not self.jn.ship_state()['fuel_percent'] == 100:
+                self.raise_if_stop_requested()
                 # check if we are being interdicted
                 interdicted = self.interdiction_check()
                 if interdicted:
@@ -2189,12 +2192,14 @@ class EDAutopilot:
                 if (time.time() - startime) > int(self.config['FuelScoopTimeOut']):
                     self.vce.say("Refueling abort, insufficient scooping")
                     return False
+                self._interruptible_sleep(0.25)
 
             logger.debug('refuel= wait for refuel')
 
             # We started fueling, so lets give it another timeout period to fuel up
             startime = time.time()
             while not self.jn.ship_state()['fuel_percent'] == 100:
+                self.raise_if_stop_requested()
                 # check if we are being interdicted
                 interdicted = self.interdiction_check()
                 if interdicted:
@@ -2204,7 +2209,7 @@ class EDAutopilot:
                 if ((time.time()-startime) > int(self.config['FuelScoopTimeOut'])):
                     self.vce.say("Refueling abort, insufficient scooping")
                     return True
-                sleep(1)
+                self._interruptible_sleep(1)
 
             logger.debug('refuel=complete')
             return True
@@ -2288,9 +2293,9 @@ class EDAutopilot:
 
         # mnvr into position
         self.set_throttle_100()
-        sleep(5)
+        self._interruptible_sleep(5)
         self.set_throttle_50()
-        sleep(1.7)
+        self._interruptible_sleep(1.7)
         self.set_throttle_0(repeat=3)
 
         self.refuel_cnt += 1
@@ -2299,6 +2304,7 @@ class EDAutopilot:
         # don't scoop first 5 tons with 40 sec break, since not scooping or not fast enough or not at all, then abort.
         startime = time.time()
         while not self.status.get_flag(FlagsScoopingFuel):
+            self.raise_if_stop_requested()
             # check if we are being interdicted
             interdicted = self.interdiction_check()
             if interdicted:
@@ -2308,6 +2314,7 @@ class EDAutopilot:
             if (time.time() - startime) > int(self.config['FuelScoopTimeOut']):
                 self.vce.say("Refueling abort, insufficient scooping")
                 return False
+            self._interruptible_sleep(0.25)
 
         logger.debug('refuel=refueling')
         self.ap_ckb('log+vce', 'Refueling')
@@ -2316,6 +2323,7 @@ class EDAutopilot:
         # We started fueling, so lets give it another timeout period to fuel up
         startime = time.time()
         while not self.jn.ship_state()['fuel_percent'] == 100:
+            self.raise_if_stop_requested()
             # check if we are being interdicted
             interdicted = self.interdiction_check()
             if interdicted:
@@ -2331,7 +2339,7 @@ class EDAutopilot:
                 self.ap_ckb('log', 'Fuel scooping Ended')
                 self.ship_control.pitch_up_down(20)
                 return True
-            sleep(1)
+            self._interruptible_sleep(1)
 
         self.ap_ckb('log', 'Refueling complete')
         self.ship_control.pitch_up_down(20)
@@ -2363,7 +2371,7 @@ class EDAutopilot:
                 # need to wait until undock complete, that is when we are back in_space
                 # TODO - This maybe an FDEV error. On leaving a FC, no music was played so the journal never logged that we went into space.
                 while self.jn.ship_state()['status'] != 'in_space':
-                    sleep(1)
+                    self._interruptible_sleep(1)
 
                 # If we are on a Fleet Carrier/Squadron Carrier we will pitch up 90 deg and fly away to avoid planet
                 if fleet_carrier or squadron_fleet_carrier:
@@ -2378,7 +2386,7 @@ class EDAutopilot:
 
                     # Wait the configured time before continuing
                     self.ap_ckb('log', 'Flying for configured FC departure time.')
-                    sleep(self.config['FCDepartureTime'])
+                    self._interruptible_sleep(self.config['FCDepartureTime'])
 
                 # If we are on an Orbital Construction Site we will need to pitch up 90 deg to avoid crashes
                 if on_orbital_construction_site:
@@ -2408,7 +2416,7 @@ class EDAutopilot:
 
                 # need to wait until undock complete, that is when we are back in_space
                 while self.jn.ship_state()['status'] != 'in_space':
-                    sleep(1)
+                    self._interruptible_sleep(1)
                 self.update_ap_status("Undock Complete, accelerating")
 
             elif self.status.get_flag(FlagsLanded):
@@ -2421,7 +2429,7 @@ class EDAutopilot:
             # Undocked or off the surface, so leave planet
             self.set_throttle_50()
             # Wait for throttle to take effect.
-            sleep(2.0)
+            self._interruptible_sleep(2.0)
 
             # The pitch rates are defined in SC, not normal flights, so bump this up a bit
             self.ship_control.pitch_up_down(90)
@@ -2459,9 +2467,10 @@ class EDAutopilot:
 
         # While Mass Locked, keep boosting.
         while self.status.get_flag(FlagsFsdMassLocked):
+            self.raise_if_stop_requested()
             if boost:
                 self.keys.send('UseBoostJuice')
-            sleep(1)
+            self._interruptible_sleep(1)
 
         # Engage Supercruise
         self.keys.send('Supercruise')
@@ -2471,9 +2480,10 @@ class EDAutopilot:
 
         # Wait for jump to supercruise, keep boosting.
         while not self.status.get_flag(FlagsFsdJump):
+            self.raise_if_stop_requested()
             if boost:
                 self.keys.send('UseBoostJuice')
-            sleep(1)
+            self._interruptible_sleep(1)
 
         # Wait for supercruise
         self.status.wait_for_flag_on(FlagsSupercruise, timeout=30)
@@ -2540,7 +2550,7 @@ class EDAutopilot:
         self.sc_engage(False)
 
         # Successful targeting of Station, lets go to it
-        sleep(3)  # Wait for compass to stop flashing blue!
+        self._interruptible_sleep(3)  # Wait for compass to stop flashing blue!
         if self.have_destination(scr_reg):
             self.ap_ckb('log', " - Station: " + station_name)
             self.update_ap_status(f"SC to Station: {station_name}")
@@ -2637,21 +2647,21 @@ class EDAutopilot:
                     self.vce.say("AP Aborting, low fuel")
                     return FSDAssistReturn.Failed
 
-        sleep(2)  # wait until screen stabilizes from possible last positioning
+        self._interruptible_sleep(2)  # wait until screen stabilizes from possible last positioning
 
         # if there is no destination defined, we are done
         if not self.have_destination(scr_reg):
             self.set_throttle_0()
             self.ap_ckb('log+vce', f"Destination reached, distance jumped:"+str(int(self.total_dist_jumped))+" lightyears")
             if self.config["AutomaticLogout"]:
-                sleep(5)
+                self._interruptible_sleep(5)
                 self.logout()
             return FSDAssistReturn.Complete
         # else there is a destination in System, so let jump over to SC Assist
         else:
             self.set_throttle_100()
             self.ap_ckb('log+vce', f"System reached, preparing for supercruise")
-            sleep(1)
+            self._interruptible_sleep(1)
             return FSDAssistReturn.Partial
 
     def sc_assist(self, scr_reg, do_docking=True):
@@ -2692,7 +2702,8 @@ class EDAutopilot:
 
         # Loop forever keeping tight align to target, until we get SC Disengage popup
         while True:
-            sleep(0.05)
+            self.raise_if_stop_requested()
+            self._interruptible_sleep(0.05)
             if (self.jn.ship_state()['status'] == 'in_supercruise' or self.status.get_flag(FlagsSupercruise) or
                     self._sc_disengage_active):
                 # Align and stay on target. If false is returned, we have lost the target behind us.
@@ -2701,7 +2712,7 @@ class EDAutopilot:
                 if align_res == ScTargetAlignReturn.Lost:
                     # Continue ahead before aligning to prevent us circling the target
                     # self.set_speed_100()
-                    sleep(10)
+                    self._interruptible_sleep(10)
                     self.set_throttle_50()
                     self.compass_align(scr_reg)  # Compass Align
 
@@ -2740,7 +2751,7 @@ class EDAutopilot:
 
         # if no error, we must have gotten disengage
         if not align_failed and do_docking:
-            sleep(4)  # wait for the journal to catch up
+            self._interruptible_sleep(4)  # wait for the journal to catch up
 
             # Check if this is a target we cannot dock at
             skip_docking = False
@@ -2782,6 +2793,7 @@ class EDAutopilot:
     # and thus redeploy another one
     def afk_combat_loop(self):
         while True:
+            self.raise_if_stop_requested()
             if not self.afk_combat.check_shields_up():
                 set_focus_elite_window()
                 self.vce.say("Shields down, evading")
@@ -2795,11 +2807,14 @@ class EDAutopilot:
                 self.vce.say("Fighter Destroyed, redeploying")
                 self.afk_combat.launch_fighter()  # assuming two fighter bays
 
+            self._interruptible_sleep(0.25)
+
         self.vce.say("Terminating AFK Combat Assist")
 
     def dss_assist(self):
         while True:
-            sleep(0.5)
+            self.raise_if_stop_requested()
+            self._interruptible_sleep(0.5)
             if self.jn.ship_state()['status'] == 'in_supercruise':
                 cur_star_system = self.jn.ship_state()['cur_star_system']
                 if cur_star_system != self._prev_star_system:
@@ -2844,6 +2859,11 @@ class EDAutopilot:
     #
     def raise_if_stop_requested(self):
         if self.stop_event.is_set():
+            raise InterruptedError("EDAP assist stop requested")
+
+    def _interruptible_sleep(self, seconds):
+        """Wait without making the End hotkey wait for a long sleep to finish."""
+        if seconds > 0 and self.stop_event.wait(seconds):
             raise InterruptedError("EDAP assist stop requested")
 
     def _request_assist_stop(self):
@@ -2970,11 +2990,13 @@ class EDAutopilot:
         @return:
         """
         self.request_stop_all()
+        self.terminate = True
         if self.vce != None:
             self.vce.quit()
         if self.overlay != None:
             self.overlay.overlay_quit()
-        self.terminate = True
+        if self.scr != None:
+            self.scr.close()
 
     def engine_loop(self):
         """

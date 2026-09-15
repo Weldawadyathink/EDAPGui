@@ -93,7 +93,7 @@ def crop_image_pix(image, quad: Quad):
 class Screen:
     def __init__(self, cb):
         self.ap_ckb = cb
-        self.mss = mss.mss()
+        self.mss = None
         self.using_screen = True  # True to use screen, false to use an image. Set screen_image to the image
         self._screen_image = None  # Screen image captured from screen, or loaded by user for testing.
         self.screen_width = 0
@@ -110,56 +110,20 @@ class Screen:
         self._bridge_file = None
         self._bridge_map = None
         self._bridge_path = os.environ.get("EDAP_CAPTURE_FILE")
+        self._last_bridge_sequence = None
+        self._last_bridge_change = time.monotonic()
+        self._bridge_stale_seconds = float(
+            os.environ.get("EDAP_CAPTURE_STALE_SECONDS", "2.0"))
 
-        # Find ED window position to determine which monitor it is on
-        self.ed_rect = self.get_elite_window_rect()
-        if self.ed_rect is None:
-            msg = f"Could not find window '{elite_dangerous_window}'. Once Elite Dangerous is running, restart EDAP."
-            self.ap_ckb('log', f"ERROR: {msg}")
-            logger.error(msg)
+        if self._bridge_path:
+            # The native bridge captures the Elite window directly. Its frame
+            # dimensions are authoritative and avoid mixing AppKit points with
+            # MSS display pixels on Retina monitors.
+            self.ed_rect = None
+            self.mons = []
+            self._configure_native_capture()
         else:
-            logger.debug(f'Found Elite Dangerous window position: {self.ed_rect}')
-
-        # Examine all monitors to determine match with ED
-        self.mons = self.mss.monitors
-        mon_num = 0
-        default = True
-        for item in self.mons:
-            logger.debug(f'Found monitor {mon_num} with details: {item}')
-            if mon_num > 0:  # ignore monitor 0 as it is the complete desktop (dims of all monitors)
-                if self.ed_rect is not None:
-                    if item['left'] == self.ed_rect[0] and item['top'] == self.ed_rect[1]:
-                        # Get information of monitor
-                        self.monitor_number = mon_num
-                        self.mon = self.mss.monitors[self.monitor_number]
-                        self.screen_width = item['width']
-                        self.screen_height = item['height']
-                        self.aspect_ratio = self.screen_width / self.screen_height
-                        self.screen_left = item['left']
-                        self.screen_top = item['top']
-                        logger.debug(f'Elite Dangerous is on monitor {mon_num}.')
-                        default = False
-                        break
-
-            # Store the first monitor incase we need it as default
-            if mon_num == 1:
-                self.monitor_number = mon_num
-                self.mon = self.mss.monitors[self.monitor_number]
-                self.screen_width = item['width']
-                self.screen_height = item['height']
-                self.aspect_ratio = self.screen_width / self.screen_height
-                self.screen_left = item['left']
-                self.screen_top = item['top']
-
-            # Next monitor
-            mon_num = mon_num + 1
-
-        # Check if ED was found on a monitor, or if we are using the default monitor
-        if default:
-            msg = (f"Elite Dangerous could not be located on any monitor. Check Elite Dangerous is not minimized and "
-                   f"is visible on screen.")
-            self.ap_ckb('log', f"ERROR: {msg}")
-            logger.error(msg)
+            self._configure_mss_capture()
 
         # Add new screen resolutions here with tested scale factors
         # this table will be default, overwritten when loading resolution.json file
@@ -209,20 +173,64 @@ class Screen:
         logger.debug('screen position: x='+str(self.screen_left)+" y="+str(self.screen_top))
         logger.debug('Default scale X, Y: ' + str(self.scaleX) + ", " + str(self.scaleY))
 
-        # A window-specific native capture has authoritative pixel dimensions.
-        # AppKit window bounds are measured in points and must not replace them.
-        if self._bridge_path:
-            try:
-                with open(self._bridge_path, "rb") as bridge_file:
-                    _, width, height = BRIDGE_HEADER.unpack(bridge_file.read(BRIDGE_HEADER.size))
-                if width and height:
-                    self.screen_width = width
-                    self.screen_height = height
-                    self.aspect_ratio = width / height
-                    self.mon = {"left": 0, "top": 0, "width": width, "height": height}
-                    logger.info(f"Using native Elite window capture at {width}x{height}.")
-            except (OSError, struct.error):
-                pass
+    def _configure_native_capture(self):
+        try:
+            with open(self._bridge_path, "rb") as bridge_file:
+                header = bridge_file.read(BRIDGE_HEADER.size)
+            sequence, width, height = BRIDGE_HEADER.unpack(header)
+            if not width or not height:
+                raise ValueError("capture bridge reported an empty frame size")
+        except (OSError, ValueError, struct.error) as exc:
+            raise RuntimeError(
+                f"Native Elite capture is not ready at '{self._bridge_path}': {exc}") from exc
+
+        self.screen_width = width
+        self.screen_height = height
+        self.aspect_ratio = width / height
+        self.mon = {"left": 0, "top": 0, "width": width, "height": height}
+        if sequence:
+            self._last_bridge_sequence = sequence
+        logger.info(f"Using native Elite window capture at {width}x{height}.")
+
+    def _configure_mss_capture(self):
+        self.mss = mss.mss()
+        self.ed_rect = self.get_elite_window_rect()
+        if self.ed_rect is None:
+            msg = f"Could not find window '{elite_dangerous_window}'. Once Elite Dangerous is running, restart EDAP."
+            self.ap_ckb('log', f"ERROR: {msg}")
+            logger.error(msg)
+        else:
+            logger.debug(f'Found Elite Dangerous window position: {self.ed_rect}')
+
+        self.mons = self.mss.monitors
+        default = True
+        for mon_num, item in enumerate(self.mons):
+            logger.debug(f'Found monitor {mon_num} with details: {item}')
+            if mon_num > 0 and self.ed_rect is not None:
+                if item['left'] == self.ed_rect[0] and item['top'] == self.ed_rect[1]:
+                    self._set_mss_monitor(mon_num, item)
+                    logger.debug(f'Elite Dangerous is on monitor {mon_num}.')
+                    default = False
+                    break
+            if mon_num == 1:
+                self._set_mss_monitor(mon_num, item)
+
+        if self.mon is None:
+            raise RuntimeError("MSS did not report a usable display")
+        if default:
+            msg = ("Elite Dangerous could not be located on any monitor. Check Elite Dangerous is not minimized and "
+                   "is visible on screen.")
+            self.ap_ckb('log', f"ERROR: {msg}")
+            logger.error(msg)
+
+    def _set_mss_monitor(self, mon_num, item):
+        self.monitor_number = mon_num
+        self.mon = self.mss.monitors[mon_num]
+        self.screen_width = item['width']
+        self.screen_height = item['height']
+        self.aspect_ratio = self.screen_width / self.screen_height
+        self.screen_left = item['left']
+        self.screen_top = item['top']
 
     @staticmethod
     def get_elite_window_rect() -> typing.Tuple[int, int, int, int] | None:
@@ -311,6 +319,8 @@ class Screen:
         # native frame bridge is configured, use it before the Windows path.
         image = self._get_bridge_region(x_left, y_top, x_right, y_bot)
         if image is None:
+            if self._bridge_path:
+                return None
             try:
                 image = array(self.mss.grab(monitor))
             except Exception as e:
@@ -352,6 +362,16 @@ class Screen:
                     time.sleep(0.002)
                     continue
 
+                now = time.monotonic()
+                if sequence != self._last_bridge_sequence:
+                    self._last_bridge_sequence = sequence
+                    self._last_bridge_change = now
+                elif now - self._last_bridge_change > self._bridge_stale_seconds:
+                    self._warn_capture_failure(
+                        f"native Elite capture has not produced a new frame for "
+                        f"{self._bridge_stale_seconds:g} seconds")
+                    return None
+
                 left = max(0, min(int(x_left), width))
                 top = max(0, min(int(y_top), height))
                 right = max(left, min(int(x_right), width))
@@ -389,6 +409,13 @@ class Screen:
         if self._bridge_file is not None:
             self._bridge_file.close()
             self._bridge_file = None
+
+    def close(self):
+        """Release capture resources during a normal GUI shutdown."""
+        self._close_bridge()
+        if self.mss is not None:
+            self.mss.close()
+            self.mss = None
         
     def get_screen_rect_pct(self, rect):
         """ Grabs a screenshot and returns the selected region as an image.

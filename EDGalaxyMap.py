@@ -14,7 +14,6 @@ class EDGalaxyMap:
     """ Handles the Galaxy Map. """
     def __init__(self, ed_ap, screen, keys, cb, is_odyssey=True):
         self.ap = ed_ap
-        self.ocr = ed_ap.ocr
         self.is_odyssey = is_odyssey
         self.screen = screen
         self.keys = keys
@@ -28,6 +27,10 @@ class EDGalaxyMap:
 
         # Load custom regions from file
         load_calibrated_regions('EDGalaxyMap', self.reg)
+
+    @property
+    def ocr(self):
+        return self.ap.ocr
 
     def set_gal_map_dest_bookmark(self, ap, bookmark_type: str, bookmark_position: int) -> bool:
         """ Set the gal map destination using a bookmark.

@@ -53,7 +53,6 @@ class EDShipControl:
 
     def __init__(self, ed_ap, screen, keys, cb):
         self.ap = ed_ap
-        self.ocr = ed_ap.ocr
         self.screen = screen
         self.keys = keys
         self.ap_ckb = cb

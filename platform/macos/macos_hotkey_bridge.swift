@@ -51,17 +51,28 @@ private func parseBinding(_ raw: String) -> Binding? {
 }
 
 private var bindings: [Binding] = []
+private var invalidBindings: [String] = []
 var index = 1
 while index < CommandLine.arguments.count {
-    if CommandLine.arguments[index] == "--binding", index + 1 < CommandLine.arguments.count,
-       let binding = parseBinding(CommandLine.arguments[index + 1]) {
-        bindings.append(binding)
+    if CommandLine.arguments[index] == "--binding", index + 1 < CommandLine.arguments.count {
+        let raw = CommandLine.arguments[index + 1]
+        if let binding = parseBinding(raw) {
+            bindings.append(binding)
+        } else {
+            invalidBindings.append(raw)
+        }
         index += 2
     } else {
+        invalidBindings.append(CommandLine.arguments[index])
         index += 1
     }
 }
 
+guard invalidBindings.isEmpty else {
+    FileHandle.standardError.write(Data(
+        "macos_hotkey_bridge: invalid bindings: \(invalidBindings.joined(separator: ", "))\n".utf8))
+    exit(2)
+}
 guard !bindings.isEmpty else {
     FileHandle.standardError.write(Data("macos_hotkey_bridge: no valid bindings\n".utf8))
     exit(2)
@@ -94,4 +105,17 @@ guard let tap = CGEvent.tapCreate(
 let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
 CFRunLoopAddSource(CFRunLoopGetCurrent(), source, .commonModes)
 CGEvent.tapEnable(tap: tap, enable: true)
+
+// stdin is a lifetime pipe owned by Python. EOF means the parent exited—even
+// after a force kill—so this helper cannot linger as an orphan process.
+FileHandle.standardInput.readabilityHandler = { handle in
+    if handle.availableData.isEmpty {
+        CFRunLoopStop(CFRunLoopGetMain())
+    }
+}
+let ready = try! JSONSerialization.data(withJSONObject: [
+    "ready": true, "bindings": bindings.count
+])
+FileHandle.standardOutput.write(ready)
+FileHandle.standardOutput.write(Data([0x0a]))
 CFRunLoopRun()

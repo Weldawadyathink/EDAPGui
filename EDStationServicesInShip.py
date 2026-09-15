@@ -26,13 +26,12 @@ class EDStationServicesInShip:
     """ Handles Station Services In Ship. """
     def __init__(self, ed_ap, screen, keys, cb):
         self.ap = ed_ap
-        self.ocr = ed_ap.ocr
         self.locale = self.ap.locale
         self.screen = screen
         self.keys = keys
         self.ap_ckb = cb
-        self.passenger_lounge = PassengerLounge(self, self.ap, self.ocr, self.keys, self.screen, self.ap_ckb)
-        self.commodities_market = CommoditiesMarket(self, self.ap, self.ocr, self.keys, self.screen, self.ap_ckb)
+        self.passenger_lounge = PassengerLounge(self, self.ap, None, self.keys, self.screen, self.ap_ckb)
+        self.commodities_market = CommoditiesMarket(self, self.ap, None, self.keys, self.screen, self.ap_ckb)
         self.status_parser = StatusParser()
         self.market_parser = MarketParser()
         # The rect is top left x, y, and bottom right x, y in fraction of screen resolution
@@ -48,6 +47,10 @@ class EDStationServicesInShip:
 
         # Load custom regions from file
         load_calibrated_regions('EDStationServicesInShip', self.reg)
+
+    @property
+    def ocr(self):
+        return self.ap.ocr
 
     def goto_station_services(self) -> bool:
         """ Goto Station Services. """
@@ -186,7 +189,6 @@ class PassengerLounge:
     def __init__(self, station_services_in_ship: EDStationServicesInShip, ed_ap, ocr, keys, screen, cb):
         self.parent = station_services_in_ship
         self.ap = ed_ap
-        self.ocr = ocr
         self.keys = keys
         self.screen = screen
         self.ap_ckb = cb
@@ -204,12 +206,15 @@ class PassengerLounge:
         self.complete_mission_row_width = 384  # Buy/sell item width in pixels at 1920x1080
         self.complete_mission_row_height = 70  # Buy/sell item height in pixels at 1920x1080
 
+    @property
+    def ocr(self):
+        return self.ap.ocr
+
 
 class CommoditiesMarket:
     def __init__(self, station_services_in_ship: EDStationServicesInShip, ed_ap, ocr, keys, screen, cb):
         self.parent = station_services_in_ship
         self.ap = ed_ap
-        self.ocr = ocr
         self.keys = keys
         self.screen = screen
         self.ap_ckb = cb
@@ -221,6 +226,10 @@ class CommoditiesMarket:
                     'supply_demand_col': {'rect': [0.42, 0.227, 0.49, 0.90]}}
         self.commodity_row_width = 422  # Buy/sell item width in pixels at 1920x1080
         self.commodity_row_height = 35  # Buy/sell item height in pixels at 1920x1080
+
+    @property
+    def ocr(self):
+        return self.ap.ocr
 
     def select_buy(self, keys) -> bool:
         """ Select Buy. Assumes on Commodities Market screen. """

@@ -21,7 +21,6 @@ class EDInternalStatusPanel:
 
     def __init__(self, ed_ap, screen, keys, cb):
         self.ap = ed_ap
-        self.ocr = ed_ap.ocr
         self.screen = screen
         self.keys = keys
         self.ap_ckb = cb
@@ -54,6 +53,10 @@ class EDInternalStatusPanel:
         load_calibrated_regions('EDInternalStatusPanel', self.reg)
 
         self.customize_regions()
+
+    @property
+    def ocr(self):
+        return self.ap.ocr
 
     def customize_regions(self):
         # Produce quadrilateral from the two bounds rectangles

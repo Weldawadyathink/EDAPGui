@@ -46,7 +46,20 @@ class Voice:
             vSay = vSay.replace(' Mk V ', ' mark five ')
             vSay = vSay.replace(' Mk ', ' mark ')
             vSay = vSay.replace(' Krait ', ' crate ')
-            self.q.put(vSay)
+            try:
+                self.q.put_nowait(vSay)
+            except queue.Full:
+                # Speech is informational. Never stall the control or Tk thread
+                # behind a slow system voice; discard the oldest queued phrase.
+                try:
+                    self.q.get_nowait()
+                    self.q.task_done()
+                except queue.Empty:
+                    pass
+                try:
+                    self.q.put_nowait(vSay)
+                except queue.Full:
+                    pass
 
     def set_off(self):
         self.v_enabled = False

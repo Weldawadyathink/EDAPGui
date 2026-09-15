@@ -87,6 +87,37 @@ while let line = readLine() {
                "accessibility": AXIsProcessTrusted()])
         continue
     }
+    if op == "key" {
+        guard let scanCode = request["scanCode"] as? Int,
+              let down = request["down"] as? Bool,
+              let keyCode = macKeyCode[scanCode] else {
+            error("Unsupported DirectInput scan code \(request["scanCode"] ?? "nil")")
+            continue
+        }
+        // Track modifier releases even if Elite disappeared between key-down
+        // and shutdown. That prevents a stale modifier from contaminating the
+        // next event if the window returns while this helper is still alive.
+        if let flag = modifierFlags[scanCode] {
+            if down { heldFlags.insert(flag) } else { heldFlags.remove(flag) }
+        }
+        guard let window = eliteWindow() else {
+            error("Could not find visible Elite window named '\(wantedTitle)'")
+            continue
+        }
+        guard CGPreflightPostEventAccess() || CGRequestPostEventAccess() else {
+            error("Accessibility permission is required to send input to Elite")
+            continue
+        }
+        guard let event = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: down) else {
+            error("Could not create keyboard event")
+            continue
+        }
+        event.flags = heldFlags
+        event.setIntegerValueField(.keyboardEventKeyboardType, value: 41)
+        event.postToPid(window.pid)
+        reply(["ok": true, "pid": window.pid, "keyCode": keyCode])
+        continue
+    }
     guard let window = eliteWindow() else {
         error("Could not find visible Elite window named '\(wantedTitle)'")
         continue
@@ -111,30 +142,6 @@ while let line = readLine() {
         } else {
             error("Could not activate Elite's process (AX error \(status.rawValue))")
         }
-        continue
-    }
-    if op == "key" {
-        guard CGPreflightPostEventAccess() || CGRequestPostEventAccess() else {
-            error("Accessibility permission is required to send input to Elite")
-            continue
-        }
-        guard let scanCode = request["scanCode"] as? Int,
-              let down = request["down"] as? Bool,
-              let keyCode = macKeyCode[scanCode] else {
-            error("Unsupported DirectInput scan code \(request["scanCode"] ?? "nil")")
-            continue
-        }
-        if let flag = modifierFlags[scanCode] {
-            if down { heldFlags.insert(flag) } else { heldFlags.remove(flag) }
-        }
-        guard let event = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: down) else {
-            error("Could not create keyboard event")
-            continue
-        }
-        event.flags = heldFlags
-        event.setIntegerValueField(.keyboardEventKeyboardType, value: 41)
-        event.postToPid(window.pid)
-        reply(["ok": true, "pid": window.pid, "keyCode": keyCode])
         continue
     }
     error("Unknown operation '\(op)'")

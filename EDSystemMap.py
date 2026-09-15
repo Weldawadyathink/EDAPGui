@@ -14,7 +14,6 @@ class EDSystemMap:
     """ Handles the System Map. """
     def __init__(self, ed_ap, screen, keys, cb, is_odyssey=True):
         self.ap = ed_ap
-        self.ocr = ed_ap.ocr
         self.is_odyssey = is_odyssey
         self.screen = screen
         self.keys = keys
@@ -27,6 +26,10 @@ class EDSystemMap:
 
         # Load custom regions from file
         load_calibrated_regions('EDSystemMap', self.reg)
+
+    @property
+    def ocr(self):
+        return self.ap.ocr
 
     def set_sys_map_dest_bookmark(self, ap, bookmark_type: str, bookmark_position: int) -> bool:
         """ Set the System Map destination using a bookmark.

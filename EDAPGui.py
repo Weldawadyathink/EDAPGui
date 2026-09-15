@@ -6,6 +6,7 @@
 # from pathlib import Path
 from datetime import datetime
 import os
+from pathlib import Path
 import queue
 import subprocess
 import threading
@@ -280,12 +281,16 @@ class APGui:
         FSD Assist. May want another to start SC Assist.
         """
         if self.ed_ap.config['HotkeysEnable']:
-            keyboard.configure({
-                self.ed_ap.config['HotKey_StopAllAssists']: (self.stop_all_assists, ()),
-                self.ed_ap.config['HotKey_StartFSD']: (self.callback, ('fsd_start', None)),
-                self.ed_ap.config['HotKey_StartSC']: (self.callback, ('sc_start', None)),
-                self.ed_ap.config['HotKey_StartRobigo']: (self.callback, ('robigo_start', None)),
-            })
+            try:
+                keyboard.configure({
+                    self.ed_ap.config['HotKey_StopAllAssists']: (self.stop_all_assists, ()),
+                    self.ed_ap.config['HotKey_StartFSD']: (self.callback, ('fsd_start', None)),
+                    self.ed_ap.config['HotKey_StartSC']: (self.callback, ('sc_start', None)),
+                    self.ed_ap.config['HotKey_StartRobigo']: (self.callback, ('robigo_start', None)),
+                })
+            except (OSError, RuntimeError, ValueError) as exc:
+                logger.error(f"Global hotkeys are unavailable: {exc}")
+                self.callback('log', f"WARNING: Global hotkeys are unavailable: {exc}")
         else:
             keyboard.remove_all_hotkeys()
 
@@ -671,7 +676,16 @@ class APGui:
         webbrowser.open_new("https://discord.gg/HCgkfSc")
 
     def open_logfile(self):
-        os.startfile('autopilot.log')
+        logfile = Path(__file__).with_name('autopilot.log')
+        try:
+            if sys.platform == "darwin":
+                subprocess.Popen(["/usr/bin/open", str(logfile)])
+            elif sys.platform == "win32":
+                os.startfile(logfile)
+            else:
+                subprocess.Popen(["xdg-open", str(logfile)])
+        except OSError as exc:
+            self.log_msg(f"Could not open log file: {exc}")
 
     def log_msg(self, msg):
         message = datetime.now().strftime("%H:%M:%S: ") + msg
@@ -1377,20 +1391,22 @@ class APGui:
 
     def restart_program(self):
         logger.debug("Entered: restart_program")
-        print("restart now")
+        self._closing = True
+        keyboard.remove_all_hotkeys()
+        self.ed_ap.request_stop_all()
+        self.ed_ap.keys.release_all_keys()
 
-        self.stop_fsd()
-        self.stop_sc()
-        self.ed_ap.quit()
+        if sys.platform == "darwin" and self.ed_ap.overlay is not None:
+            # The overlay and capture helpers are owned by the native launcher.
+            # Keep the overlay alive across exec; a normal quit would send it a
+            # permanent termination state before the replacement process starts.
+            self.ed_ap.terminate = True
+            self.ed_ap.vce.quit()
+            self.ed_ap.scr.close()
+        else:
+            self.ed_ap.quit()
         sleep(0.1)
-
-        import sys
-        print("argv was", sys.argv)
-        print("sys.executable was", sys.executable)
-        print("restart now")
-
-        import os
-        os.execv(sys.executable, ['python'] + sys.argv)
+        os.execv(sys.executable, [sys.executable, *sys.argv])
 
 
 def apply_theme_to_titlebar(root):
