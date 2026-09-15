@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from ShipCalibration import loadout_fingerprint
 import os
 from enum import Enum
 from os import environ, listdir
@@ -226,6 +227,11 @@ class EDJournal:
             'odyssey': True,
             'status': 'in_space',
             'type': None,
+            'ship_id': None,
+            'ship_name': '',
+            'commander_id': '',
+            'loadout_fingerprint': '',
+            'unladen_mass': None,
             'location': None,
             'star_class': None,
             'target': None,
@@ -433,7 +439,19 @@ class EDJournal:
                 self.ship['interdicted'] = True
 
             # parse ship type
+            elif log_event == 'Commander':
+                self.ship['commander_id'] = log.get('FID', '')
+
+            elif log_event == 'SetUserShipName':
+                if log.get('ShipID') == self.ship.get('ship_id'):
+                    self.ship['ship_name'] = log.get('UserShipName', '')
+
             elif log_event == 'LoadGame':
+                self.ship['ship_id'] = log.get('ShipID')
+                self.ship['ship_name'] = log.get('ShipName', '')
+                self.ship['commander_id'] = log.get('FID', self.ship.get('commander_id', ''))
+                self.ship['loadout_fingerprint'] = ''
+                self.ship['unladen_mass'] = None
                 self.ship['type'] = log['Ship'].lower()
                 self.ship['ship_size'] = get_ship_size(log['Ship'])
 
@@ -441,6 +459,10 @@ class EDJournal:
             # When written: at startup, when loading from main menu, or when switching ships,
             # or after changing the ship in Outfitting, or when docking SRV back in mothership
             elif log_event == 'Loadout':
+                self.ship['ship_id'] = log.get('ShipID')
+                self.ship['ship_name'] = log.get('ShipName', '')
+                self.ship['loadout_fingerprint'] = loadout_fingerprint(log)
+                self.ship['unladen_mass'] = log.get('UnladenMass')
                 self.ship['type'] = log['Ship'].lower()
                 self.ship['ship_size'] = get_ship_size(log['Ship'])
                 self.ship['cargo_capacity'] = log['CargoCapacity']

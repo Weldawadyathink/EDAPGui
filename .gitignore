@@ -38,3 +38,6 @@ runs/
 /.venv-macos/
 /.native-runtime/
 /edapgui-native.log
+
+# Measured, user-owned ship response profiles
+/configs/ship_calibration.json
