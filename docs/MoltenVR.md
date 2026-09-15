@@ -71,6 +71,9 @@ PaddleOCR is loaded only when an OCR operation is first requested.
 The application log is `autopilot.log`; native launcher and helper diagnostics
 are written to `edapgui-native.log` in the source directory.
 
+Implementation details and the maintainer handoff are documented in
+[NativeMacOSDevelopment.md](NativeMacOSDevelopment.md).
+
 ## Launching from Raycast
 
 Run `platform/macos/install_app.command` once to install `EDAPGui.app` in your
