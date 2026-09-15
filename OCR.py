@@ -1,4 +1,5 @@
 from __future__ import annotations
+import threading
 import time
 import cv2
 import numpy as np
@@ -29,6 +30,7 @@ class OCR:
         """
         self.ap = ed_ap
         self.screen = screen
+        self._inference_lock = threading.RLock()
         if self.ap.config['OCRMobile']:
             self.paddleocr = PaddleOCR(
                 use_doc_orientation_classify=False,
@@ -53,22 +55,36 @@ class OCR:
         reused, the next call will cause a hard process crash with no Python traceback.
         Creating a fresh instance prevents this. """
         try:
-            logger.warning("Reinitializing PaddleOCR after failure.")
-            if self.ap.config['OCRMobile']:
-                self.paddleocr = PaddleOCR(
-                    use_doc_orientation_classify=False,
-                    use_doc_unwarping=False,
-                    use_textline_orientation=False,
-                    text_detection_model_name="PP-OCRv5_mobile_det",
-                    text_recognition_model_name="en_PP-OCRv5_mobile_rec")  # text detection + text recognition
-            else:
-                self.paddleocr = PaddleOCR(
-                    use_doc_orientation_classify=False,
-                    use_doc_unwarping=False,
-                    use_textline_orientation=False)  # text detection + text recognition
+            with self._inference_lock:
+                logger.warning("Reinitializing PaddleOCR after failure.")
+                if self.ap.config['OCRMobile']:
+                    self.paddleocr = PaddleOCR(
+                        use_doc_orientation_classify=False,
+                        use_doc_unwarping=False,
+                        use_textline_orientation=False,
+                        text_detection_model_name="PP-OCRv5_mobile_det",
+                        text_recognition_model_name="en_PP-OCRv5_mobile_rec")  # text detection + text recognition
+                else:
+                    self.paddleocr = PaddleOCR(
+                        use_doc_orientation_classify=False,
+                        use_doc_unwarping=False,
+                        use_textline_orientation=False)  # text detection + text recognition
 
+        except InterruptedError:
+            raise
         except Exception as e:
             logger.error(f"Failed to reinitialize PaddleOCR: {e}")
+
+    def _predict(self, image):
+        # Paddle's native predictor is not safe to enter concurrently from the
+        # assist and SCO-monitor threads.
+        while not self._inference_lock.acquire(timeout=0.1):
+            self.ap.raise_if_stop_requested()
+        try:
+            self.ap.raise_if_stop_requested()
+            return self.paddleocr.predict(image)
+        finally:
+            self._inference_lock.release()
 
     def string_similarity(self, s1: str, s2: str) -> float:
         """ Performs a string similarity check and returns the result.
@@ -120,7 +136,8 @@ class OCR:
         try:
             # Remove Alpha channel if it exists
             image2 = cv2.cvtColor(image, cv2.COLOR_BGRA2BGR)
-            ocr_data = self.paddleocr.predict(image2)
+            ocr_data = self._predict(image2)
+            self.ap.raise_if_stop_requested()
 
             if ocr_data is None:
                 return None, None
@@ -143,6 +160,8 @@ class OCR:
                 # logger.info(f"image_simple_ocr: {ocr_textlist}")
                 return ocr_data, ocr_textlist
 
+        except InterruptedError:
+            raise
         except Exception as e:
             logger.error(f"OCR failed: {e}")
             # Reinit to avoid hard crash on next call due to corrupted C++ state
@@ -171,7 +190,8 @@ class OCR:
         try:
             # Remove Alpha channel if it exists
             image2 = cv2.cvtColor(image, cv2.COLOR_BGRA2BGR)
-            ocr_data = self.paddleocr.predict(image2)
+            ocr_data = self._predict(image2)
+            self.ap.raise_if_stop_requested()
 
             # elapsed_time = time.time() - start_time
             # print(f"OCR took {elapsed_time} secs")
@@ -199,6 +219,8 @@ class OCR:
                 # logger.info(f"image_simple_ocr: {ocr_textlist}")
                 return ocr_textlist
 
+        except InterruptedError:
+            raise
         except Exception as e:
             logger.error(f"OCR failed: {e}")
             # Reinit to avoid hard crash on next call due to corrupted C++ state
@@ -388,7 +410,8 @@ class OCR:
         """
 
         in_list = False  # Have we seen one item yet? Prevents quiting if we have not selected the first item.
-        while 1:
+        for _ in range(200):
+            self.ap.raise_if_stop_requested()
             img = self.capture_region_pct(region)
             if img is None:
                 return False
@@ -408,6 +431,9 @@ class OCR:
                 in_list = True
                 keys.send("UI_Down")
 
+        logger.warning(f"Stopped searching an unexpectedly long OCR list for '{text}'.")
+        return False
+
     def wait_for_text(self, ap, texts: list[str], region, timeout=30) -> bool:
         """ Wait for a screen to appear by checking for text to appear in the region.
         @param ap: ED_AP instance.
@@ -426,6 +452,7 @@ class OCR:
         start_time = time.time()
         text_found = False
         while True:
+            ap.raise_if_stop_requested()
             # Check for timeout.
             if time.time() > (start_time + timeout):
                 break
@@ -446,7 +473,7 @@ class OCR:
             if text_found:
                 break
 
-            time.sleep(0.25)
+            ap._interruptible_sleep(0.25)
 
         return text_found
 

@@ -7,8 +7,6 @@ from EDAP_data import GuiFocusSystemMap
 from EDlogger import logger
 from Screen_Regions import Quad, load_calibrated_regions
 from StatusParser import StatusParser
-from time import sleep
-
 
 class EDSystemMap:
     """ Handles the System Map. """
@@ -17,7 +15,7 @@ class EDSystemMap:
         self.is_odyssey = is_odyssey
         self.screen = screen
         self.keys = keys
-        self.status_parser = StatusParser()
+        self.status_parser = StatusParser(stop_event=self.ap.stop_event)
         self.ap_ckb = cb
         # The rect is top left x, y, and bottom right x, y in fraction of screen resolution
         self.reg = {'full_panel': {'rect': [0.1, 0.1, 0.9, 0.9]},
@@ -48,11 +46,11 @@ class EDSystemMap:
                     return False
 
                 ap.keys.send('UI_Left')  # Go to BOOKMARKS
-                sleep(.5)
+                self.ap._interruptible_sleep(.5)
                 ap.keys.send('UI_Select')  # Select BOOKMARKS
-                sleep(.25)
+                self.ap._interruptible_sleep(.25)
                 ap.keys.send('UI_Right')  # Go to FAVORITES
-                sleep(.25)
+                self.ap._interruptible_sleep(.25)
 
                 # If bookmark type is Fav, do nothing as this is the first item
                 if bookmark_type.lower().startswith("bod"):
@@ -62,18 +60,18 @@ class EDSystemMap:
                 elif bookmark_type.lower().startswith("set"):
                     ap.keys.send('UI_Down', repeat=3)  # Go to SETTLEMENTS
 
-                sleep(.25)
+                self.ap._interruptible_sleep(.25)
                 ap.keys.send('UI_Select')  # Select bookmark type, moves you to bookmark list
                 ap.keys.send('UI_Left')  # Sometimes the first bookmark is not selected, so we try to force it.
                 ap.keys.send('UI_Right')
-                sleep(.25)
+                self.ap._interruptible_sleep(.25)
                 ap.keys.send('UI_Down', repeat=bookmark_position - 1)
-                sleep(.25)
+                self.ap._interruptible_sleep(.25)
                 ap.keys.send('UI_Select', hold=3.0)
 
                 # Close System Map
                 ap.keys.send('SystemMapOpen')
-                sleep(0.5)
+                self.ap._interruptible_sleep(0.5)
                 return True
 
             elif bookmark_type.lower().startswith("nav"):
@@ -90,9 +88,9 @@ class EDSystemMap:
 
                 ap.keys.send('UI_Up', hold=4)
                 ap.keys.send('UI_Down', repeat=bookmark_position - 1)
-                sleep(1.0)
+                self.ap._interruptible_sleep(1.0)
                 ap.keys.send('UI_Select')
-                sleep(0.25)
+                self.ap._interruptible_sleep(0.25)
                 ap.keys.send('UI_Select')
                 ap.keys.send("UI_Back")
                 ap.keys.send("HeadLookReset")

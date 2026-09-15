@@ -1,5 +1,4 @@
 
-from time import sleep
 import time
 
 
@@ -104,7 +103,7 @@ class Robigo:
         ap.keys.send("UI_Right", repeat=2)  # go to Complete Mission
         ap.keys.send("UI_Select")
 
-        sleep(2)  # give time for mission page to come up
+        ap._interruptible_sleep(2)  # give time for mission page to come up
 
         found = self.is_found(ap, "missions", "missions")
 
@@ -116,16 +115,16 @@ class Robigo:
 
         ap.keys.send("UI_Up", repeat=2)  # goto the top
         ap.keys.send("UI_Down")  # down one to select first mission
-        sleep(0.5)
+        ap._interruptible_sleep(0.5)
         for i in range(loop_missions):  
             ap.keys.send("UI_Select")  # select mission
-            sleep(0.1)
+            ap._interruptible_sleep(0.1)
             ap.keys.send("UI_Up")  # Up to Credit
-            sleep(0.1)
+            ap._interruptible_sleep(0.1)
             ap.keys.send("UI_Select")  # Select it
-            sleep(10)   # wait until the "skip" button changes to "back" button
+            ap._interruptible_sleep(10)   # wait until the "skip" button changes to "back" button
             ap.keys.send("UI_Select")  # Select the Back key which will be highlighted
-            sleep(1.5)
+            ap._interruptible_sleep(1.5)
 
         ap.keys.send("UI_Back")  # seem to be going back to Mission menu
         
@@ -141,7 +140,7 @@ class Robigo:
         ap.keys.send("UIFocus", state=1)
         ap.keys.send("UI_Left")
         ap.keys.send("UIFocus", state=0)   # this gets us over to the Nav panel
-        sleep(0.5)
+        ap._interruptible_sleep(0.5)
 
         # 
         ap.keys.send("UI_Down", hold=2)  # got to bottom row
@@ -155,7 +154,7 @@ class Robigo:
             else:
                 tries += 1
                 ap.keys.send("UI_Up")   # up to next item
-                sleep(0.2)
+                ap._interruptible_sleep(0.2)
 
         ap.keys.send("UI_Back", repeat=10)  # go back and drop Nav Panel
         ap.keys.send("HeadLookReset")
@@ -167,10 +166,10 @@ class Robigo:
     def select_mission(self, ap):
         ap.keys.send("UI_Select", repeat=2)  # select mission and Pick Cabin
         ap.keys.send("UI_Down")    # move down to Auto Fill line
-        sleep(0.1)
+        ap._interruptible_sleep(0.1)
         ap.keys.send("UI_Right", repeat=2)  # go over to "Auto Fill"
         ap.keys.send("UI_Select")  # Select auto fill
-        sleep(0.1)
+        ap._interruptible_sleep(0.1)
         ap.keys.send("UI_Select")  # Select Accept Mission, which was auto highlighted
         
     # Goes through the missions selecting any that are Sirius Atmos
@@ -181,11 +180,11 @@ class Robigo:
 
         # Asssume in passenger Lounge. goto Missions Menu
         ap.keys.send("UI_Up", repeat=3)
-        sleep(0.2)
+        ap._interruptible_sleep(0.2)
         ap.keys.send("UI_Down", repeat=2)
-        sleep(0.2)
+        ap._interruptible_sleep(0.2)
         ap.keys.send("UI_Select")  # select personal transport
-        sleep(15)  # wait 15 second for missions menu to show up
+        ap._interruptible_sleep(15)  # wait 15 second for missions menu to show up
 
         # Loop selecting missions, go up to 20 times, have seen at time up to 17 missions
         # before getting to Sirius Atmos missions
@@ -195,13 +194,13 @@ class Robigo:
             # not a sirius mission
             if not found:
                 ap.keys.send("UI_Down")   # not sirius, go down to next
-                sleep(0.1)
+                ap._interruptible_sleep(0.1)
                 # if we had selected missions and suddenly we are not
                 # then go back to top and scroll down again. This is due to scrolling
                 # missions 
                 if had_selected:
                     ap.keys.send("UI_Up", hold=2)  # go back to very top
-                    sleep(0.5)
+                    ap._interruptible_sleep(0.5)
                     cnt = 1  # reset counter  
                     had_selected = False               
 
@@ -210,7 +209,7 @@ class Robigo:
                 mission_cnt += 1    # found a mission, select it
                 had_selected = True
                 self.select_mission(ap)
-                sleep(1.5)
+                ap._interruptible_sleep(1.5)
 
         ap.keys.send("UI_Back", repeat=4)  # go back to main menu              
 
@@ -221,16 +220,16 @@ class Robigo:
         ap.keys.send("UI_Up", hold=2)  # go to very top  
         ap.keys.send("UI_Down")
         ap.keys.send("UI_Select")
-        sleep(6)  # give time for Mission Board to come up
+        ap._interruptible_sleep(6)  # give time for Mission Board to come up
 
         ap.keys.send("UI_Up")      # ensure at Missio Board
         ap.keys.send("UI_Left")    #        
         ap.keys.send("UI_Select")  # select Mission Board
-        sleep(1)
+        ap._interruptible_sleep(1)
         ap.keys.send("UI_Right")   # Passenger lounge
-        sleep(0.1)
+        ap._interruptible_sleep(0.1)
         ap.keys.send("UI_Select")
-        sleep(2)                   # give time to bring up menu
+        ap._interruptible_sleep(2)                   # give time to bring up menu
                
     # SC to the Marker and retrieve num of missions redirected (i.e. completed)
     def travel_to_sirius_atmos(self, ap):
@@ -246,14 +245,14 @@ class Robigo:
             
             # wait until we are back in_space
             while ap.jn.ship_state()['status'] != 'in_space':
-                sleep(1)
+                ap._interruptible_sleep(1)
 
             # give a few more seconds
-            sleep(2)
+            ap._interruptible_sleep(2)
             ap.set_throttle_0()
             ap.keys.send("SelectTarget")    # target the marker so missions will complete
             # takes about 10-22 sec to acknowledge missions
-            sleep(15)
+            ap._interruptible_sleep(15)
             if ap.jn.ship_state()['mission_redirected'] == 0:
                 print("Didnt make it to sirius atmos, should SC again")     
 
@@ -304,6 +303,7 @@ class Robigo:
         self.state = self.determine_state(ap)
 
         while True:
+            ap.raise_if_stop_requested()
        
             if self.state == STATE_MISSIONS:
                 if not self.do_single_loop:  # if looping, then do mission processing
@@ -311,13 +311,13 @@ class Robigo:
                     
                     # Complete Missions, if we have any
                     self.goto_passenger_lounge(ap)
-                    sleep(2.5)  # wait for new menu comes up
+                    ap._interruptible_sleep(2.5)  # wait for new menu comes up
                     self.complete_missions(ap)
 
                     ap.update_ap_status("Get missions")
                     # Select and fill up on Sirius missions   
                     self.goto_passenger_lounge(ap)
-                    sleep(1)
+                    ap._interruptible_sleep(1)
                     self.get_missions(ap)
                 self.state = STATE_ROUTE_TO_SOTHIS
                 
@@ -331,7 +331,7 @@ class Robigo:
                     ap.update_ap_status("SOTHIS not set: " + str(dest))
                     break
                 
-                sleep(1)    # give time to popdown GalaxyMap
+                ap._interruptible_sleep(1)    # give time to popdown GalaxyMap
                 self.state = STATE_UNDOCK
   
             elif self.state == STATE_UNDOCK: 
@@ -371,7 +371,7 @@ class Robigo:
                 ap.update_ap_status("Route to Robigo")     
                 # Set Route back to Robigo
                 dest = ap.galaxy_map.set_gal_map_destination_text(ap, "ROBIGO", target_select_cb=ap.jn.ship_state)
-                sleep(2)
+                ap._interruptible_sleep(2)
                 
                 if dest == False:
                     ap.update_ap_status("Robigo not set: " + str(dest))
@@ -384,7 +384,7 @@ class Robigo:
                 # have Route Assist bring us back to Robigo system
                 ap.fsd_assist(ap.scrReg)
                 ap.set_throttle_50()
-                sleep(2)
+                ap._interruptible_sleep(2)
                 self.state = STATE_TARGET_ROBIGO_MINES
       
             elif self.state == STATE_TARGET_ROBIGO_MINES:

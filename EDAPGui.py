@@ -69,6 +69,12 @@ Author: sumzer0@yahoo.com
 # must be updated with a new release so that the update check works properly!
 # contains the names of the release.
 EDAP_VERSION = "V1.9.3"
+EDAP_REPOSITORY = os.environ.get(
+    "EDAP_REPOSITORY_URL",
+    "https://github.com/Weldawadyathink/EDAPGui"
+    if sys.platform == "darwin" else "https://github.com/SumZer0-git/EDAPGui")
+EDAP_DOC_BRANCH = os.environ.get(
+    "EDAP_DOC_BRANCH", "native-macos" if sys.platform == "darwin" else "main")
 # depending on how release versions are best marked you could also change it to the release tag, see function check_update.
 # ---------------------------------------------------------------------------
 
@@ -610,31 +616,46 @@ class APGui:
         self.update_statusline("Idle")
 
     def about(self):
-        webbrowser.open_new("https://github.com/SumZer0-git/EDAPGui")
+        webbrowser.open_new(EDAP_REPOSITORY)
 
     def check_for_updates(self, repo_path):
         try:
-            # Fetch the latest changes from the remote repository
-            subprocess.run(["git", "fetch"], cwd=repo_path, check=True, capture_output=True)
-
-            # Get the current commit hash of the local repository
-            local_hash = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo_path, capture_output=True, text=True,
-                                        check=True).stdout.strip()
-
-            # Get the commit hash of the remote repository
-            remote_hash = subprocess.run(["git", "rev-parse", "origin/HEAD"], cwd=repo_path, capture_output=True,
-                                         text=True, check=True).stdout.strip()
-
-            # Compare the commit hashes
-            if local_hash != remote_hash:
-                print("The repository has been updated. Please clone it again to get the latest version.")
-                return True
-            else:
-                print("The repository is up to date.")
+            subprocess.run(
+                ["git", "fetch", "origin"], cwd=repo_path,
+                check=True, capture_output=True, timeout=15)
+            branch = subprocess.run(
+                ["git", "branch", "--show-current"], cwd=repo_path,
+                capture_output=True, text=True, check=True).stdout.strip()
+            if not branch:
                 return False
+            remote_ref = f"refs/remotes/origin/{branch}"
+            remote_exists = subprocess.run(
+                ["git", "show-ref", "--verify", "--quiet", remote_ref],
+                cwd=repo_path).returncode == 0
+            if not remote_exists:
+                return False
+
+            local_hash = subprocess.run(
+                ["git", "rev-parse", "HEAD"], cwd=repo_path,
+                capture_output=True, text=True, check=True).stdout.strip()
+            remote_hash = subprocess.run(
+                ["git", "rev-parse", remote_ref], cwd=repo_path,
+                capture_output=True, text=True, check=True).stdout.strip()
+            if local_hash == remote_hash:
+                return False
+
+            # An update exists only if our current commit is an ancestor of the
+            # matching remote branch. Local commits and divergent work are not
+            # mistaken for an available update.
+            return subprocess.run(
+                ["git", "merge-base", "--is-ancestor", local_hash, remote_hash],
+                cwd=repo_path).returncode == 0
 
         except subprocess.CalledProcessError as e:
             print(f"Error checking for updates: {e}")
+            return False
+        except subprocess.TimeoutExpired:
+            print("Update check timed out; continuing without it.")
             return False
         except FileNotFoundError:
             print("Git command not found. Please ensure Git is installed and in your system's PATH.")
@@ -647,9 +668,7 @@ class APGui:
         #     if mb == True:
         #         webbrowser.open_new("https://github.com/SumZer0-git/EDAPGui/releases/latest")
 
-        # Example usage:
-        # repo_path = "/path/to/your/local/repo"
-        repo_path = "./"
+        repo_path = Path(__file__).parent
         updates_available = self.check_for_updates(repo_path)
 
         if updates_available:
@@ -670,7 +689,7 @@ class APGui:
         pass
 
     def open_changelog(self):
-        webbrowser.open_new("https://github.com/SumZer0-git/EDAPGui/blob/main/ChangeLog.md")
+        webbrowser.open_new(f"{EDAP_REPOSITORY}/blob/{EDAP_DOC_BRANCH}/ChangeLog.md")
 
     def open_discord(self):
         webbrowser.open_new("https://discord.gg/HCgkfSc")
@@ -790,24 +809,25 @@ class APGui:
     def open_help(self):
         # Determine the active Tab
         tab_text = self._nb.tab(self._nb.select(), "text")
+        docs_url = f"{EDAP_REPOSITORY}/blob/{EDAP_DOC_BRANCH}/docs"
 
         if tab_text == "Main":
-            webbrowser.open_new("https://github.com/SumZer0-git/EDAPGui/blob/main/docs/Main.md")
+            webbrowser.open_new(f"{docs_url}/Main.md")
         elif tab_text == "Settings":
-            webbrowser.open_new("https://github.com/SumZer0-git/EDAPGui/blob/main/docs/Settings.md")
+            webbrowser.open_new(f"{docs_url}/Settings.md")
         elif tab_text == "Debug/Test":
-            webbrowser.open_new("https://github.com/SumZer0-git/EDAPGui/blob/main/docs/DebugTest.md")
+            webbrowser.open_new(f"{docs_url}/DebugTest.md")
         elif tab_text == "Calibration":
-            webbrowser.open_new("https://github.com/SumZer0-git/EDAPGui/blob/main/docs/Calibration.md")
+            webbrowser.open_new(f"{docs_url}/Calibration.md")
         elif tab_text == "Waypoints":
-            webbrowser.open_new("https://github.com/SumZer0-git/EDAPGui/blob/main/docs/WaypointEditor.md")
+            webbrowser.open_new(f"{docs_url}/WaypointEditor.md")
         elif tab_text == "Colonization":
-            webbrowser.open_new("https://github.com/SumZer0-git/EDAPGui/blob/main/docs/ColonizationEditor.md")
+            webbrowser.open_new(f"{docs_url}/ColonizationEditor.md")
         elif tab_text == "TCE":
-            webbrowser.open_new("https://github.com/SumZer0-git/EDAPGui/blob/main/docs/TCE.md")
+            webbrowser.open_new(f"{docs_url}/TCE.md")
         else:
             messagebox.showwarning("Warning", f"No match for tab text '{tab_text}'. Please report to developers.")
-            webbrowser.open_new("https://github.com/SumZer0-git/EDAPGui/blob/main/docs/Main.md")
+            webbrowser.open_new(f"{docs_url}/Main.md")
 
 
     def entry_update(self, event):
@@ -1173,11 +1193,17 @@ class APGui:
                                            command=(lambda field='Enable Auto-tune RPY': self.check_cb(field)))
         cb_auto_tune_rpy.grid(row=3, column=0, padx=2, pady=2, sticky=tk.W)
 
-        btn_speed_0 = ttk.Button(blk_ship, text='0% Throttle', command=self.ship_throttle_0)
+        btn_speed_0 = ttk.Button(
+            blk_ship, text='0% Throttle', command=lambda: self._start_background_task(
+                'set throttle', self.ship_throttle_0, announce=False))
         btn_speed_0.grid(row=4, column=0, padx=2, pady=12, columnspan=1, sticky="NSEW")
-        btn_speed_50 = ttk.Button(blk_ship, text='50% Throttle', command=self.ship_throttle_50)
+        btn_speed_50 = ttk.Button(
+            blk_ship, text='50% Throttle', command=lambda: self._start_background_task(
+                'set throttle', self.ship_throttle_50, announce=False))
         btn_speed_50.grid(row=4, column=1, padx=2, pady=12, columnspan=1, sticky="NSEW")
-        btn_speed_100 = ttk.Button(blk_ship, text='100% Throttle', command=self.ship_throttle_100)
+        btn_speed_100 = ttk.Button(
+            blk_ship, text='100% Throttle', command=lambda: self._start_background_task(
+                'set throttle', self.ship_throttle_100, announce=False))
         btn_speed_100.grid(row=5, column=0, padx=2, pady=2, columnspan=1, sticky="NSEW")
 
         btn_align_target = ttk.Button(blk_ship, text='Align to Target', command=self.tuning_align_target)
@@ -1315,7 +1341,9 @@ class APGui:
         # Help Actions
         blk_help_actions = ttk.LabelFrame(page2, text="Help Actions", padding=(10, 5))
         blk_help_actions.grid(row=0, column=1, padx=10, pady=5, sticky="NSEW")
-        btn_check_updates = ttk.Button(blk_help_actions, text="Check for Updates", command=self.check_updates)
+        btn_check_updates = ttk.Button(
+            blk_help_actions, text="Check for Updates",
+            command=lambda: self._start_background_task('update check', self.check_updates))
         btn_check_updates.grid(row=0, column=0, padx=2, pady=2, sticky=tk.W)
         btn_view_changelog = ttk.Button(blk_help_actions, text="View Changelog", command=self.open_changelog)
         btn_view_changelog.grid(row=1, column=0, padx=2, pady=2, sticky=tk.W)

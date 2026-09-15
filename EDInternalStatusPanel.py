@@ -4,7 +4,6 @@ import json
 import logging
 import os
 from copy import copy
-from time import sleep
 import cv2
 from EDAP_data import *
 # from EDKeys import EDKeys
@@ -25,7 +24,7 @@ class EDInternalStatusPanel:
         self.keys = keys
         self.ap_ckb = cb
         self.locale = self.ap.locale
-        self.status_parser = StatusParser()
+        self.status_parser = StatusParser(stop_event=self.ap.stop_event)
 
         self.modules_tab_text = self.locale["INT_PNL_TAB_MODULES"]
         self.fire_groups_tab_text = self.locale["INT_PNL_TAB_FIRE_GROUPS"]
@@ -173,7 +172,7 @@ class EDInternalStatusPanel:
             self.keys.send('UIFocus', state=1)
             self.keys.send('UI_Right')
             self.keys.send('UIFocus', state=0)
-            sleep(0.5)
+            self.ap._interruptible_sleep(0.5)
 
             # Check if it opened
             active, active_tab_name = self.is_panel_active()
@@ -253,7 +252,7 @@ class EDInternalStatusPanel:
                 logger.debug("is_right_panel_active: no image selected")
 
             # Wait and retry
-            sleep(1)
+            self.ap._interruptible_sleep(1)
 
             # In case we are on a picture tab, cycle to the next tab
             self.keys.send('CycleNextPanel')
@@ -303,24 +302,24 @@ class EDInternalStatusPanel:
 
         # Assumes on the INVENTORY tab
         ap.keys.send('UI_Right')
-        sleep(0.1)
+        self.ap._interruptible_sleep(0.1)
         ap.keys.send('UI_Up')  # To FILTERS
-        sleep(0.1)
+        self.ap._interruptible_sleep(0.1)
         ap.keys.send('UI_Right')  # To TRANSFER >>
-        sleep(0.1)
+        self.ap._interruptible_sleep(0.1)
         ap.keys.send('UI_Select')  # Click TRANSFER >>
-        sleep(0.1)
+        self.ap._interruptible_sleep(0.1)
         ap.keys.send('UI_Up', hold=3)
-        sleep(0.1)
+        self.ap._interruptible_sleep(0.1)
         ap.keys.send('UI_Up')
-        sleep(0.1)
+        self.ap._interruptible_sleep(0.1)
         ap.keys.send('UI_Select')
 
         ap.keys.send('UI_Select')
-        sleep(0.1)
+        self.ap._interruptible_sleep(0.1)
 
         ap.keys.send("UI_Back", repeat=4)
-        sleep(0.2)
+        self.ap._interruptible_sleep(0.2)
         ap.keys.send("HeadLookReset")
         print("End of unload FC")
         # quit()
@@ -334,30 +333,30 @@ class EDInternalStatusPanel:
 
         # Assumes on the INVENTORY tab
         ap.keys.send('UI_Right')
-        sleep(0.1)
+        self.ap._interruptible_sleep(0.1)
         ap.keys.send('UI_Up')  # To FILTERS
-        sleep(0.1)
+        self.ap._interruptible_sleep(0.1)
         ap.keys.send('UI_Right')  # To >> TRANSFER
-        sleep(0.1)
+        self.ap._interruptible_sleep(0.1)
         ap.keys.send('UI_Select')  # Click >> TRANSFER
-        sleep(0.1)
+        self.ap._interruptible_sleep(0.1)
         ap.keys.send('UI_Up', hold=3)  # go to top of list
-        sleep(0.1)
+        self.ap._interruptible_sleep(0.1)
 
         index = buy_commodities['Down']
 
         ap.keys.send('UI_Down', hold=0.05, repeat=index)  # go down # of times user specified
-        sleep(0.5)
+        self.ap._interruptible_sleep(0.5)
         ap.keys.send('UI_Left', hold=10)  # Transfer commodity, wait 10 sec to xfer
 
-        sleep(0.1)
+        self.ap._interruptible_sleep(0.1)
         ap.keys.send('UI_Select')  # Take us down to "Confirm Item Transfer"
 
         ap.keys.send('UI_Select')  # Click Transfer
-        sleep(0.1)
+        self.ap._interruptible_sleep(0.1)
 
         ap.keys.send("UI_Back", repeat=4)
-        sleep(0.2)
+        self.ap._interruptible_sleep(0.2)
         ap.keys.send("HeadLookReset")
         print("End of transfer from FC")
 

@@ -117,6 +117,7 @@ class EDAutopilot:
         self.ship_tst_pitch_enabled = False
         self.ship_tst_yaw_enabled = False
         self.stop_event = threading.Event()
+        self._resource_lock = threading.Lock()
 
         # Load AP.json config
         self.load_config()
@@ -176,7 +177,7 @@ class EDAutopilot:
         self.waypoint = EDWayPoint(self, cb, self.jn.ship_state()['odyssey'])
         self.robigo = Robigo(self)
         self.status = StatusParser(stop_event=self.stop_event)
-        self.nav_route = NavRouteParser()
+        self.nav_route = NavRouteParser(stop_event=self.stop_event)
         self.ship_control = EDShipControl(self, self.scr, self.keys, cb)
         self.internal_panel = EDInternalStatusPanel(self, self.scr, self.keys, cb)
         self.galaxy_map = EDGalaxyMap(self, self.scr, self.keys, cb, self.jn.ship_state()['odyssey'])
@@ -262,28 +263,36 @@ class EDAutopilot:
     def tce_integration(self) -> TceIntegration:
         """ Load TCE Integration class when needed. """
         if not self._tce_integration:
-            self._tce_integration = TceIntegration(self, self.ap_ckb)
+            with self._resource_lock:
+                if not self._tce_integration:
+                    self._tce_integration = TceIntegration(self, self.ap_ckb)
         return self._tce_integration
 
     @property
     def mach_learn(self) -> MachLearn:
         """ Load Machine Learning class when needed. """
         if not self._mach_learn:
-            self._mach_learn = MachLearn(self, self.ap_ckb)
+            with self._resource_lock:
+                if not self._mach_learn:
+                    self._mach_learn = MachLearn(self, self.ap_ckb)
         return self._mach_learn
 
     @property
     def ocr(self) -> OCR:
         """ Load OCR class when needed. """
         if not self._ocr:
-            self._ocr = OCR(self, self.scr)
+            with self._resource_lock:
+                if not self._ocr:
+                    self._ocr = OCR(self, self.scr)
         return self._ocr
 
     @property
     def fss_screen(self) -> EDFSS:
         """ Load FSS class when needed. """
         if not self._fss_screen:
-            self._fss_screen = EDFSS(self, self.ap_ckb)
+            with self._resource_lock:
+                if not self._fss_screen:
+                    self._fss_screen = EDFSS(self, self.ap_ckb)
         return self._fss_screen
 
     def update_config(self):
@@ -1480,7 +1489,8 @@ class EDAutopilot:
             # Sleep upto 1 sec max. If OCR takes > 1 sec, there will be no delay
             elapsed_time = time.time() - start_time
             if elapsed_time < 1.0:
-                self._interruptible_sleep(1.0 - elapsed_time)
+                if self.stop_event.wait(1.0 - elapsed_time):
+                    break
 
         # Reset disengage latch, in case it was latched.
         self._sc_disengage_active = False
@@ -1610,6 +1620,7 @@ class EDAutopilot:
 
         # if sun in front of us, then keep pitching up until it is below us
         while self.is_sun_dead_ahead(scr_reg):
+            self.raise_if_stop_requested()
             self.keys.send('PitchUpButton', state=1)
 
             # check if we are being interdicted
@@ -1883,6 +1894,7 @@ class EDAutopilot:
         # We have Target or Compass. Are we close to Target?
         while ((abs(off['yaw']) > target_align_outer_lim) or
                (abs(off['pit']) > target_align_outer_lim)):
+            self.raise_if_stop_requested()
 
             target_align_outer_lim = target_align_inner_lim  # Keep aligning until we are within this lower range.
 
@@ -2593,6 +2605,7 @@ class EDAutopilot:
         # TODO - can we enable this? Seems like a better way
         # while nav_route_parser.get_last_system() is not None:
         while self.jn.ship_state()['target']:
+            self.raise_if_stop_requested()
             self.update_overlay()
 
             if self.jn.ship_state()['status'] == 'in_space' or self.jn.ship_state()['status'] == 'in_supercruise':

@@ -6,6 +6,7 @@ import atexit
 import json
 import os
 from pathlib import Path
+import select
 import subprocess
 import threading
 
@@ -20,6 +21,7 @@ class MacOSBridge:
         self.helper = Path(os.environ.get("EDAP_MACOS_INPUT_HELPER", default))
         self._process = None
         self._lock = threading.Lock()
+        self.timeout = float(os.environ.get("EDAP_MACOS_BRIDGE_TIMEOUT", "2.0"))
 
     def _start(self):
         if self._process is not None and self._process.poll() is None:
@@ -44,15 +46,25 @@ class MacOSBridge:
             try:
                 self._process.stdin.write(json.dumps(request, separators=(",", ":")) + "\n")
                 self._process.stdin.flush()
+                ready, _, _ = select.select(
+                    [self._process.stdout], [], [], self.timeout)
+                if not ready:
+                    raise TimeoutError(
+                        f"Native input helper did not respond within {self.timeout:g} seconds")
                 line = self._process.stdout.readline()
-            except (BrokenPipeError, OSError) as exc:
+            except (BrokenPipeError, OSError, TimeoutError) as exc:
                 self.close()
                 raise MacOSBridgeError(f"Native input helper stopped: {exc}") from exc
             if not line:
                 code = self._process.poll()
                 self.close()
                 raise MacOSBridgeError(f"Native input helper exited unexpectedly ({code})")
-            response = json.loads(line)
+            try:
+                response = json.loads(line)
+            except json.JSONDecodeError as exc:
+                self.close()
+                raise MacOSBridgeError(
+                    f"Native input helper returned malformed data: {exc}") from exc
             if not response.get("ok"):
                 raise MacOSBridgeError(response.get("error", "Native helper request failed"))
             return response

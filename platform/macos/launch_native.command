@@ -14,16 +14,41 @@ HOTKEY_BIN="$SCRIPT_DIR/macos_hotkey_bridge"
 RUNTIME_DIR="$EDAP_DIR/.native-runtime"
 CAPTURE_FILE="$RUNTIME_DIR/frame.raw"
 OVERLAY_FILE="$RUNTIME_DIR/overlay.json"
+LOCK_DIR="$RUNTIME_DIR/launcher.lock"
 LOG_FILE="$EDAP_DIR/edapgui-native.log"
 CAPTURE_WIDTH="${EDAP_CAPTURE_WIDTH:-2560}"
 CAPTURE_HEIGHT="${EDAP_CAPTURE_HEIGHT:-1440}"
 CAPTURE_FPS="${EDAP_CAPTURE_FPS:-15}"
 ELITE_TITLE="${EDAP_ELITE_WINDOW_TITLE:-Elite - Dangerous (CLIENT)}"
 
-if pgrep -f '[p]ython.*EDAPGui.py' >/dev/null 2>&1; then
-  print -r -- "EDAPGui is already running." >>"$LOG_FILE"
-  exit 0
+mkdir -p "$RUNTIME_DIR"
+if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+  lock_pid=""
+  [[ -f "$LOCK_DIR/pid" ]] && read -r lock_pid <"$LOCK_DIR/pid"
+  if [[ -n "$lock_pid" ]] && kill -0 "$lock_pid" 2>/dev/null; then
+    print -r -- "EDAPGui is already running (launcher PID $lock_pid)." >>"$LOG_FILE"
+    exit 0
+  fi
+  rm -f "$LOCK_DIR/pid"
+  rmdir "$LOCK_DIR" 2>/dev/null || true
+  mkdir "$LOCK_DIR"
 fi
+print -r -- "$$" >"$LOCK_DIR/pid"
+
+capture_pid=""
+overlay_pid=""
+cleanup() {
+  [[ -n "$capture_pid" ]] && kill "$capture_pid" >/dev/null 2>&1 || true
+  [[ -n "$overlay_pid" ]] && kill "$overlay_pid" >/dev/null 2>&1 || true
+  [[ -n "$capture_pid" ]] && wait "$capture_pid" 2>/dev/null || true
+  [[ -n "$overlay_pid" ]] && wait "$overlay_pid" 2>/dev/null || true
+  rm -f "$LOCK_DIR/pid"
+  rmdir "$LOCK_DIR" 2>/dev/null || true
+}
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 for required in "$PYTHON_BIN" "$CAPTURE_BIN" "$OVERLAY_BIN" "$INPUT_BIN" "$HOTKEY_BIN"; do
   if [[ ! -x "$required" ]]; then
@@ -33,7 +58,6 @@ for required in "$PYTHON_BIN" "$CAPTURE_BIN" "$OVERLAY_BIN" "$INPUT_BIN" "$HOTKE
   fi
 done
 
-mkdir -p "$RUNTIME_DIR"
 pkill -TERM -f "[m]acos_capture_bridge.*${CAPTURE_FILE}" >/dev/null 2>&1 || true
 pkill -TERM -f "[m]acos_overlay_bridge.*${OVERLAY_FILE}" >/dev/null 2>&1 || true
 rm -f "$CAPTURE_FILE" "$OVERLAY_FILE" "$OVERLAY_FILE.tmp"
@@ -44,12 +68,6 @@ overlay_pid=$!
   --height "$CAPTURE_HEIGHT" --fps "$CAPTURE_FPS" --window-title "$ELITE_TITLE" \
   >>"$LOG_FILE" 2>&1 &
 capture_pid=$!
-
-cleanup() {
-  kill "$capture_pid" "$overlay_pid" >/dev/null 2>&1 || true
-  wait "$capture_pid" "$overlay_pid" 2>/dev/null || true
-}
-trap cleanup EXIT HUP INT TERM
 
 capture_ready=0
 for _ in {1..80}; do

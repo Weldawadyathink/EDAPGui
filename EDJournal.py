@@ -534,8 +534,9 @@ class EDJournal:
 
         # exceptions
         except Exception as e:
-            #logger.exception("Exception occurred")
-            print(e)
+            logger.debug(
+                f"Ignored malformed or incomplete journal event '{log.get('event', 'unknown')}': {e}",
+                exc_info=True)
 
     def process_construction_depot_details(self):
         # TODO - save this construction data to a construction.json with multiple markets and update it

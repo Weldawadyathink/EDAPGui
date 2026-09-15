@@ -71,16 +71,16 @@ class AFK_Combat:
         if self.voice is not None:
             self.voice.say("In supercruise, retreating from site")
 
-        sleep(1)
+        self.ap._interruptible_sleep(1)
         self.ap.set_throttle_100(repeat=2)
-        sleep(20)
+        self.ap._interruptible_sleep(20)
         self.ap.set_throttle_0()
-        sleep(10)
+        self.ap._interruptible_sleep(10)
         if self.voice is not None:
             self.voice.say("Exiting supercruise, all power to system and weapons")
         self.k.send('HyperSuperCombination', repeat=2)
         self.ap.stop_sco_monitoring()
-        sleep(7)
+        self.ap._interruptible_sleep(7)
         self.k.send('IncreaseSystemsPower', repeat=3)
         self.k.send('IncreaseWeaponsPower', repeat=3)
 
@@ -92,17 +92,17 @@ class AFK_Combat:
         self.k.send('UIFocus', state=1)
         self.k.send('UI_Down')
         self.k.send('UIFocus', state=0)
-        sleep(0.2)
+        self.ap._interruptible_sleep(0.2)
 
         # Reset to top, go left x2, go up x3
         self.k.send('UI_Left', repeat=2)
         self.k.send('UI_Up', repeat=3)
-        sleep(0.1)
+        self.ap._interruptible_sleep(0.1)
 
         # Down to fighter and then Right then will be over deploy button
         self.k.send('UI_Down')
         self.k.send('UI_Right')
-        sleep(0.1)
+        self.ap._interruptible_sleep(0.1)
 
         # go to top fighter bay selection
         self.k.send('UI_Up')
@@ -123,7 +123,7 @@ class AFK_Combat:
         self.k.send('UI_Down')  # go down one and select the hired pilot
         self.k.send('UI_Select')
 
-        sleep(0.2)
+        self.ap._interruptible_sleep(0.2)
         self.k.send('UI_Back')
         self.k.send('HeadLookReset')
         #

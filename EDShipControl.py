@@ -6,8 +6,6 @@ from EDAP_data import *
 from RPYLineEditor import convert_curve_to_float, convert_curve_to_str, closest_angle
 from Screen import set_focus_elite_window
 from StatusParser import StatusParser
-from time import sleep
-
 
 def scale(inp: float, in_min: float, in_max: float, out_min: float, out_max: float, clamp: bool) -> float:
     """ Does scaling of the input based on input and output min/max.
@@ -56,7 +54,7 @@ class EDShipControl:
         self.screen = screen
         self.keys = keys
         self.ap_ckb = cb
-        self.status_parser = StatusParser()
+        self.status_parser = StatusParser(stop_event=self.ap.stop_event)
 
     def add_to_roll_curve(self, angle: float, rate: float):
         """
@@ -142,11 +140,13 @@ class EDShipControl:
         if self.status_parser.get_gui_focus() == GuiFocusNoFocus:
             return True
 
-        # Go down to cockpit view
-        while not self.status_parser.get_gui_focus() == GuiFocusNoFocus:
+        # Go down to cockpit view, but never spin forever on stale status.
+        for _ in range(12):
+            self.ap.raise_if_stop_requested()
+            if self.status_parser.get_gui_focus() == GuiFocusNoFocus:
+                return True
             self.keys.send("UI_Back")  # make sure back in cockpit view
-
-        return True
+        return False
 
     def roll_clockwise_anticlockwise(self, deg: float, auto_tune: bool = False, cur_deg: float = 0.0) -> (
             CompassTargetOffset | None):
@@ -219,7 +219,7 @@ class EDShipControl:
         # Wait for ship to stabilize. Calc the delay from the angle 0 - 45 deg = 0.1 - 0.75 Sec. 45 deg is where the
         # rate no longer increases.
         dly = scale(abs_deg, 0.0, 45.0, 0.5, 1.0, True)
-        sleep(dly)
+        self.ap._interruptible_sleep(dly)
 
         # Take current reading
         off = self.ap.get_compass_target_offset()
@@ -312,7 +312,7 @@ class EDShipControl:
         # Wait for ship to stabilize. Calc the delay from the angle 0 - 30 deg = 0.1 - 0.5 Sec. 30 deg is where the
         # rate no longer increases.
         dly = scale(abs_deg, 0.0, 30.0, 0.5, 0.75, True)
-        sleep(dly)
+        self.ap._interruptible_sleep(dly)
 
         # Take current reading
         off = self.ap.get_compass_target_offset()
@@ -406,7 +406,7 @@ class EDShipControl:
         # Wait for ship to stabilize. Calc the delay from the angle 0 - 30 deg = 0.1 - 0.4 Sec. 30 deg is where the
         # rate no longer increases.
         dly = scale(abs_deg, 0.0, 30.0, 0.5, 0.75, True)
-        sleep(dly)
+        self.ap._interruptible_sleep(dly)
 
         # Take current reading
         off = self.ap.get_compass_target_offset()
@@ -452,11 +452,14 @@ class EDShipControl:
         test_time = 0.05
         delta = 0.0
         for targ_ang in [2.0, 3.0, 5.0, 8.0, 13.0, 21.0, 34.0, 55.0, 89.0, 144.0]:
-            while 1:
+            calibrated = False
+            for _ in range(25):
+                self.ap.raise_if_stop_requested()
                 set_focus_elite_window()
                 off = self.ap.get_compass_target_offset()
                 if not off:
-                    break
+                    self.ap_ckb('log', "Roll tuning stopped: compass target was lost.")
+                    return
 
                 # Clear the overlays before moving
                 if self.ap.debug_overlay:
@@ -472,7 +475,7 @@ class EDShipControl:
                 else:
                     self.keys.send('RollLeftButton', hold=test_time)
 
-                sleep(1)
+                self.ap._interruptible_sleep(1)
 
                 off2 = self.ap.get_compass_target_offset()
                 if not off2:
@@ -488,9 +491,14 @@ class EDShipControl:
 
                     print(f"Roll Angle: {round(delta, 1)}: Time: {round(test_time, 2)} Rate: {rate}")
                     self.ap_ckb('log', f"Roll Angle: {round(delta, 1)}: Time: {round(test_time, 2)} Rate: {rate}")
+                    calibrated = True
                     break
                 else:
                     print(f"Ignored Roll Angle: {round(delta, 1)}: Time: {round(test_time, 2)} Rate: {rate}")
+
+            if not calibrated:
+                self.ap_ckb('log', f"Roll tuning stopped: no useful response near {targ_ang} degrees.")
+                return
 
         self.ap_ckb('log', "Completed Roll Tuning. Remember to Save.")
 
@@ -517,12 +525,14 @@ class EDShipControl:
         test_time = 0.05
         delta = 0.0
         for targ_ang in [0.5, 1.0, 2.0, 3.0, 4.0, 6.0, 8.0, 16.0, 32.0, 60.0, 90.0, 120.0]:
-            while 1:
+            calibrated = False
+            for _ in range(25):
+                self.ap.raise_if_stop_requested()
                 set_focus_elite_window()
                 off = self.ap.get_compass_target_offset()
                 if not off:
-                    print(f"Target lost")
-                    break
+                    self.ap_ckb('log', "Pitch tuning stopped: target was lost.")
+                    return
 
                 # Clear the overlays before moving
                 if self.ap.debug_overlay:
@@ -537,12 +547,12 @@ class EDShipControl:
                 else:
                     self.keys.send('PitchDownButton', hold=test_time)
 
-                sleep(1)
+                self.ap._interruptible_sleep(1)
 
                 off2 = self.ap.get_compass_target_offset()
                 if not off2:
-                    print(f"Target lost")
-                    break
+                    self.ap_ckb('log', "Pitch tuning stopped: target was lost.")
+                    return
 
                 delta_lst = delta
                 delta = round(abs(off2['pit'] - off['pit']), 1)
@@ -554,9 +564,14 @@ class EDShipControl:
 
                     print(f"Pitch Angle: {delta}: Time: {round(test_time, 2)} Rate: {rate}")
                     self.ap_ckb('log', f"Pitch Angle: {delta}: Time: {round(test_time, 2)} Rate: {rate}")
+                    calibrated = True
                     break
                 else:
                     print(f"Ignored Pitch Angle: {delta}: Time: {round(test_time, 2)} Rate: {rate}")
+
+            if not calibrated:
+                self.ap_ckb('log', f"Pitch tuning stopped: no useful response near {targ_ang} degrees.")
+                return
 
         self.ap_ckb('log', "Completed Pitch Tuning. Remember to Save.")
 
@@ -583,11 +598,14 @@ class EDShipControl:
         test_time = 0.07
         delta = 0.0
         for targ_ang in [0.5, 1.0, 2.0, 3.0, 4.0, 6.0, 8.0, 16.0, 32.0, 60.0, 90.0, 120.0]:
-            while 1:
+            calibrated = False
+            for _ in range(25):
+                self.ap.raise_if_stop_requested()
                 set_focus_elite_window()
                 off = self.ap.get_compass_target_offset()
                 if not off:
-                    break
+                    self.ap_ckb('log', "Yaw tuning stopped: target was lost.")
+                    return
 
                 # Clear the overlays before moving
                 if self.ap.debug_overlay:
@@ -602,11 +620,12 @@ class EDShipControl:
                 else:
                     self.keys.send('YawLeftButton', hold=test_time)
 
-                sleep(1)
+                self.ap._interruptible_sleep(1)
 
                 off2 = self.ap.get_compass_target_offset()
                 if not off2:
-                    break
+                    self.ap_ckb('log', "Yaw tuning stopped: target was lost.")
+                    return
 
                 delta_lst = delta
                 delta = round(abs(off2['yaw'] - off['yaw']), 1)
@@ -618,9 +637,14 @@ class EDShipControl:
 
                     print(f"Yaw Angle: {delta}: Time: {round(test_time, 2)} Rate: {rate}")
                     self.ap_ckb('log', f"Yaw Angle: {delta}: Time: {round(test_time, 2)} Rate: {rate}")
+                    calibrated = True
                     break
                 else:
                     print(f"Ignored Yaw Angle: {delta}: Time: {round(test_time, 2)} Rate: {rate}")
+
+            if not calibrated:
+                self.ap_ckb('log', f"Yaw tuning stopped: no useful response near {targ_ang} degrees.")
+                return
 
         self.ap_ckb('log', "Completed Yaw Tuning. Remember to Save.")
 
@@ -640,7 +664,7 @@ class EDShipControl:
         #     return
 
         set_focus_elite_window()
-        sleep(0.25)
+        self.ap._interruptible_sleep(0.25)
         # self.ap.set_speed_50()
         self.roll_clockwise_anticlockwise(angle)
 
@@ -660,7 +684,7 @@ class EDShipControl:
         #     return
 
         set_focus_elite_window()
-        sleep(0.25)
+        self.ap._interruptible_sleep(0.25)
         # self.ap.set_speed_50()
         self.pitch_up_down(angle)
 
@@ -680,7 +704,7 @@ class EDShipControl:
         #     return
 
         set_focus_elite_window()
-        sleep(0.25)
+        self.ap._interruptible_sleep(0.25)
         # self.ap.set_speed_50()
         self.yaw_right_left(angle)
 

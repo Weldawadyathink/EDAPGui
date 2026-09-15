@@ -4,8 +4,6 @@ import json
 import logging
 import os
 from copy import copy
-from time import sleep
-
 import cv2
 import numpy as np
 
@@ -114,7 +112,7 @@ class EDNavigationPanel:
         self.keys = keys
         self.ap_ckb = cb
         self.locale = self.ap.locale
-        self.status_parser = StatusParser()
+        self.status_parser = StatusParser(stop_event=self.ap.stop_event)
 
         self.navigation_tab_text = self.locale["NAV_PNL_TAB_NAVIGATION"]
         self.transactions_tab_text = self.locale["NAV_PNL_TAB_TRANSACTIONS"]
@@ -258,7 +256,7 @@ class EDNavigationPanel:
             self.keys.send('UIFocus', state=1)
             self.keys.send('UI_Left')
             self.keys.send('UIFocus', state=0)
-            sleep(0.5)
+            self.ap._interruptible_sleep(0.5)
 
             # Check if it opened
             active, active_tab_name = self.is_panel_active()
@@ -328,7 +326,7 @@ class EDNavigationPanel:
                     break
 
             # Wait and retry
-            sleep(1)
+            self.ap._interruptible_sleep(1)
 
             # In case we are on a picture tab, cycle to the next tab
             self.keys.send('CycleNextPanel')
@@ -430,7 +428,7 @@ class EDNavigationPanel:
         self.keys.send('UI_Up', hold=2)  # got to top row
         self.keys.send('UI_Right')
         self.keys.send('UI_Select')
-        sleep(0.3)
+        self.ap._interruptible_sleep(0.3)
 
         self.hide_panel()
         return True
@@ -445,10 +443,12 @@ class EDNavigationPanel:
         ocr_textlist_last = ""
         tries = 0
         in_list = False  # Have we seen one item yet? Prevents quiting if we have not selected the first item.
-        while 1:
+        for _ in range(100):
+            self.ap.raise_if_stop_requested()
             # Get the location panel image
             loc_panel = self.capture_location_panel()
             if loc_panel is None:
+                self.keys.send("UI_Up", state=0)
                 return None
 
             # Find the selected item/menu (solid orange)
@@ -477,6 +477,9 @@ class EDNavigationPanel:
                     self.keys.send("UI_Up", state=0)  # got to top row
                     return True
 
+        self.keys.send("UI_Up", state=0)
+        return False
+
     def find_destination_in_list(self, dst_name) -> bool:
         # tries is the number of rows to go through to find the item looking for
         # the Nav Panel should be filtered to reduce the number of rows in the list
@@ -490,7 +493,8 @@ class EDNavigationPanel:
 
         y_last = -1
         in_list = False  # Have we seen one item yet? Prevents quiting if we have not selected the first item.
-        while 1:
+        for _ in range(200):
+            self.ap.raise_if_stop_requested()
             # Get the location panel image
             loc_panel = self.capture_location_panel()
             if loc_panel is None:
@@ -549,6 +553,9 @@ class EDNavigationPanel:
                 else:
                     in_list = True
                     self.keys.send("UI_Down")  # up to next item
+
+        logger.warning(f"Stopped searching an unexpectedly long navigation list for '{dst_name}'.")
+        return False
 
 
 def dummy_cb(msg, body=None):

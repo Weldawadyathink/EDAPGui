@@ -225,11 +225,11 @@ class StatusParser:
                 except Exception as e:
                     if attempt >= 2:
                         logger.debug(f'An error occurred reading Status.json file (attempt {attempt}). File may be open.')
-                    sleep(backoff)
+                    self._poll_wait(backoff)
                     backoff = min(backoff * 2, 1.0)
                     attempt += 1
             else:
-                sleep(backoff)
+                self._poll_wait(backoff)
                 backoff = min(backoff * 2, 1.0)
                 attempt += 1
 

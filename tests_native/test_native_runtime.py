@@ -86,6 +86,15 @@ class CooperativeRuntimeTests(unittest.TestCase):
         with self.assertRaises(InterruptedError):
             parser._poll_wait(30)
 
+    def test_status_read_retry_honors_stop(self):
+        with tempfile.TemporaryDirectory() as directory:
+            status_path = Path(directory) / "Status.json"
+            status_path.write_text("{")
+            stop_event = threading.Event()
+            stop_event.set()
+            with self.assertRaises(InterruptedError):
+                StatusParser(status_path, stop_event=stop_event)
+
     def test_voice_queue_never_blocks_producer(self):
         voice = Voice()
         voice.v_enabled = True

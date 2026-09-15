@@ -8,7 +8,6 @@ import cv2
 from EDJournal import StationType
 from MarketParser import MarketParser
 from StatusParser import StatusParser
-from time import sleep
 from EDlogger import logger
 from Screen_Regions import Quad, load_calibrated_regions
 
@@ -32,7 +31,7 @@ class EDStationServicesInShip:
         self.ap_ckb = cb
         self.passenger_lounge = PassengerLounge(self, self.ap, None, self.keys, self.screen, self.ap_ckb)
         self.commodities_market = CommoditiesMarket(self, self.ap, None, self.keys, self.screen, self.ap_ckb)
-        self.status_parser = StatusParser()
+        self.status_parser = StatusParser(stop_event=self.ap.stop_event)
         self.market_parser = MarketParser()
         # The rect is top left x, y, and bottom right x, y in fraction of screen resolution
         self.reg = {'commodities_market': {'rect': [0.0, 0.0, 0.25, 0.25]},
@@ -86,7 +85,7 @@ class EDStationServicesInShip:
         self.keys.send("UI_Select")  # station services
 
         # TODO - replace with OCR from OCR branch?
-        sleep(3)  # wait for new menu to finish rendering
+        self.ap._interruptible_sleep(3)  # wait for new menu to finish rendering
 
         return True
 
@@ -173,16 +172,16 @@ class EDStationServicesInShip:
         ap.keys.send('UI_Left', repeat=2)  # Go to RESET
         ap.keys.send('UI_Right', repeat=2)  # Go to TRANSFER ALL
         ap.keys.send('UI_Select')  # Select TRANSFER ALL
-        sleep(0.5)
+        test_ed_ap._interruptible_sleep(0.5)
 
         ap.keys.send('UI_Left')  # Go to CONFIRM TRANSFER
         ap.keys.send('UI_Select')  # Select CONFIRM TRANSFER
-        sleep(2)
+        self.ap._interruptible_sleep(2)
 
         ap.keys.send('UI_Down')  # Go to EXIT
         ap.keys.send('UI_Select')  # Select EXIT
 
-        sleep(2)  # give time to popdown menu
+        self.ap._interruptible_sleep(2)  # give time to popdown menu
 
 
 class PassengerLounge:
@@ -240,7 +239,7 @@ class CommoditiesMarket:
 
         keys.send("UI_Select")  # Select Buy
 
-        sleep(0.5)  # give time to bring up list
+        self.ap._interruptible_sleep(0.5)  # give time to bring up list
         keys.send('UI_Right')  # Go to top of commodities list
         return True
 
@@ -254,7 +253,7 @@ class CommoditiesMarket:
         keys.send("UI_Down")
         keys.send("UI_Select")  # Select Sell
 
-        sleep(0.5)  # give time to bring up list
+        self.ap._interruptible_sleep(0.5)  # give time to bring up list
         keys.send('UI_Right')  # Go to top of commodities list
         return True
 
@@ -299,7 +298,7 @@ class CommoditiesMarket:
 
         if index > -1:
             keys.send('UI_Up', hold=5.0)  # go up to top of list
-            sleep(1.0)
+            self.ap._interruptible_sleep(1.0)
             keys.send('UI_Down', hold=0.05, repeat=index)  # go down # of times user specified
 
             # # Get the goods panel image
@@ -334,7 +333,7 @@ class CommoditiesMarket:
             #                                                   q_out.left, q_out.top - 25, (0, 255, 0))
             #             self.ap.overlay.overlay_paint()
 
-            sleep(0.75)
+            self.ap._interruptible_sleep(0.75)
             keys.send('UI_Select')  # Select that commodity
 
             if self.ap.debug_overlay:
@@ -342,7 +341,7 @@ class CommoditiesMarket:
                 self.ap.overlay.overlay_quad_pct('buy_qty_box', q, (0, 255, 0), 2, 5)
                 self.ap.overlay.overlay_paint()
 
-            sleep(0.5)  # give time to popup
+            self.ap._interruptible_sleep(0.5)  # give time to popup
             keys.send('UI_Up', repeat=2)  # go up to quantity to buy (may not default to this)
             # Log the planned quantity
             self.ap_ckb('log+vce', f"Buying {act_qty} units of {name}.")
@@ -354,7 +353,7 @@ class CommoditiesMarket:
                 keys.send("UI_Right", hold=0.04, repeat=act_qty)
             keys.send('UI_Down')
             keys.send('UI_Select')  # Select Buy
-            sleep(0.5)
+            self.ap._interruptible_sleep(0.5)
             # keys.send('UI_Back')  # Back to commodities list
 
         return True, act_qty
@@ -406,10 +405,10 @@ class CommoditiesMarket:
 
         if index > -1:
             keys.send('UI_Up', hold=5.0)  # go up to top of list
-            sleep(1.0)
+            self.ap._interruptible_sleep(1.0)
             keys.send('UI_Down', hold=0.05, repeat=index)  # go down # of times user specified
 
-            sleep(0.75)
+            self.ap._interruptible_sleep(0.75)
             keys.send('UI_Select')  # Select that commodity
 
             if self.ap.debug_overlay:
@@ -417,7 +416,7 @@ class CommoditiesMarket:
                 self.ap.overlay.overlay_quad_pct('sell_qty_box', q, (0, 255, 0), 2, 5)
                 self.ap.overlay.overlay_paint()
 
-            sleep(0.5)  # give time for popup
+            self.ap._interruptible_sleep(0.5)  # give time for popup
             keys.send('UI_Up', repeat=2)  # make sure at top
 
             # Sell all if quantity is 9999 or if we are selling
@@ -433,7 +432,7 @@ class CommoditiesMarket:
 
             keys.send('UI_Down')  # Down to the Sell button (already assume sell all)
             keys.send('UI_Select')  # Select to Sell all
-            sleep(0.5)
+            self.ap._interruptible_sleep(0.5)
             # keys.send('UI_Back')  # Back to commodities list
 
         return True, act_qty
@@ -488,4 +487,4 @@ if __name__ == "__main__":
 
         test_ed_ap.overlay.overlay_paint()
 
-        sleep(0.5)
+        self.ap._interruptible_sleep(0.5)

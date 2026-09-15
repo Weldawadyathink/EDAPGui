@@ -53,6 +53,24 @@ The launcher defaults to a 2560x1440 Elite frame at 15 FPS. Overrides include
 Set `EDAP_ML_DEVICE=cpu` to force CPU inference or `EDAP_ML_DEVICE=mps` to use
 Metal. The default is `ane`, with automatic CPU fallback.
 
+## Runtime safety
+
+The native launcher is the owner of the Python app, capture process, and
+overlay process. It uses an atomic single-instance lock and shuts down its
+children whenever Python exits or the launcher receives a termination signal.
+The input and hotkey helpers also use parent-owned pipes, so they exit on EOF
+instead of becoming detached background processes.
+
+This is lifecycle ownership rather than a watchdog: no process periodically
+kills EDAP based on CPU usage or timing guesses. On the application side,
+assist waits are cooperatively interruptible, held keys are released on stop,
+and idle monitor loops are rate limited. A capture frame that has stopped
+updating for two seconds is rejected rather than reused for control decisions.
+PaddleOCR is loaded only when an OCR operation is first requested.
+
+The application log is `autopilot.log`; native launcher and helper diagnostics
+are written to `edapgui-native.log` in the source directory.
+
 ## Rollback
 
 The launcher stored in the MoltenVR bottle runs this source checkout's native

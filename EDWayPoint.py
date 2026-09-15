@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-from time import sleep
 from CargoParser import CargoParser
 from EDAP_data import *
 from EDJournal import StationType
@@ -214,7 +213,9 @@ class EDWayPoint:
     def log_stats(self):
         calc1 = 1.5 ** self.stats_log['Colonisation']
         calc2 = 1.5 ** self.stats_log['Construction']
-        sleep(max(calc1, calc2))
+        # This used to grow exponentially without a ceiling and could make the
+        # worker appear hung after a long run.
+        self.ap._interruptible_sleep(min(max(calc1, calc2), 2.0))
 
     def execute_trade(self, ap, dest_key):
         # Get trade commodities from waypoint
@@ -316,7 +317,7 @@ class EDWayPoint:
                 data = self.market_parser.get_market_data()
                 if data is not None:
                     market_time_new = self.market_parser.current_data['timestamp']
-                sleep(1)  # wait for new menu to finish rendering
+                self.ap._interruptible_sleep(1)  # wait for new menu to finish rendering
 
             cargo_capacity = ap.jn.ship_state()['cargo_capacity']
             logger.info(f"Execute trade: Ship's max cargo capacity: {cargo_capacity}")
@@ -363,7 +364,7 @@ class EDWayPoint:
                 # Save changes
                 self.write_waypoints(data=None, filename='./waypoints/' + Path(self.filename).name)
 
-            sleep(1)
+            self.ap._interruptible_sleep(1)
 
             # --------- BUY ----------
             if len(buy_commodities) > 0 or len(global_buy_commodities) > 0:
@@ -462,7 +463,7 @@ class EDWayPoint:
                 # Save changes
                 self.write_waypoints(data=None, filename='./waypoints/' + Path(self.filename).name)
 
-            sleep(1.5)  # give time to popdown
+            self.ap._interruptible_sleep(1.5)  # give time to popdown
             # Go to ship view
             ap.ship_control.goto_cockpit_view()
 
@@ -481,6 +482,7 @@ class EDWayPoint:
         # Loop until complete, or error
         _abort = False
         while not _abort:
+            self.ap.raise_if_stop_requested()
             # Current location
             cur_star_system = self.ap.jn.ship_state()['cur_star_system'].upper()
             cur_station = self.ap.jn.ship_state()['cur_station'].upper()
@@ -664,7 +666,7 @@ class EDWayPoint:
 
                     # Jump to the station by name
                     res = self.ap.supercruise_to_station(scr_reg, next_wp_station)
-                    sleep(1)  # Allow status log to update
+                    self.ap._interruptible_sleep(1)  # Allow status log to update
                     continue
                 else:
                     self.ap_ckb('log+vce', f"Arrived at target System: {next_wp_system}")

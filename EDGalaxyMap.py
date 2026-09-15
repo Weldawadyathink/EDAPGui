@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import json
 import os
+import time
 
 from EDAP_data import GuiFocusGalaxyMap
 from Screen_Regions import Quad, load_calibrated_regions
 from StatusParser import StatusParser
-from time import sleep
 from EDlogger import logger
 
 
@@ -17,7 +17,7 @@ class EDGalaxyMap:
         self.is_odyssey = is_odyssey
         self.screen = screen
         self.keys = keys
-        self.status_parser = StatusParser()
+        self.status_parser = StatusParser(stop_event=self.ap.stop_event)
         self.ap_ckb = cb
         # The rect is top left x, y, and bottom right x, y in fraction of screen resolution
         self.reg = {'full_panel': {'rect': [0.1, 0.1, 0.9, 0.9]},
@@ -46,11 +46,11 @@ class EDGalaxyMap:
                 return False
 
             ap.keys.send('UI_Left')  # Go to BOOKMARKS
-            sleep(.5)
+            self.ap._interruptible_sleep(.5)
             ap.keys.send('UI_Select')  # Select BOOKMARKS
-            sleep(.25)
+            self.ap._interruptible_sleep(.25)
             ap.keys.send('UI_Right')  # Go to FAVORITES
-            sleep(.25)
+            self.ap._interruptible_sleep(.25)
 
             # If bookmark type is Fav, do nothing as this is the first item
             if bookmark_type.lower().startswith("sys"):
@@ -62,16 +62,16 @@ class EDGalaxyMap:
             elif bookmark_type.lower().startswith("set"):
                 ap.keys.send('UI_Down', repeat=4)  # Go to SETTLEMENTS
 
-            sleep(.25)
+            self.ap._interruptible_sleep(.25)
             ap.keys.send('UI_Select')  # Select bookmark type, moves you to bookmark list
-            sleep(.25)
+            self.ap._interruptible_sleep(.25)
             ap.keys.send('UI_Down', repeat=bookmark_position - 1)
-            sleep(.25)
+            self.ap._interruptible_sleep(.25)
             ap.keys.send('UI_Select', hold=3.0)
 
             # Close Galaxy map
             ap.keys.send('GalaxyMapOpen')
-            sleep(0.5)
+            self.ap._interruptible_sleep(0.5)
             return True
 
         return False
@@ -90,32 +90,37 @@ class EDGalaxyMap:
             return False
 
         ap.keys.send('CycleNextPanel')
-        sleep(1)
+        self.ap._interruptible_sleep(1)
         ap.keys.send('UI_Select')
-        sleep(2)
+        self.ap._interruptible_sleep(2)
 
         ap.keys.type_text(target_name, interval=0.25)
-        sleep(1)
+        self.ap._interruptible_sleep(1)
 
         # send enter key
         ap.keys.send_key('Down', 28)
-        sleep(0.05)
+        self.ap._interruptible_sleep(0.05)
         ap.keys.send_key('Up', 28)
 
-        sleep(7)
+        self.ap._interruptible_sleep(7)
         ap.keys.send('UI_Right')
-        sleep(1)
+        self.ap._interruptible_sleep(1)
         ap.keys.send('UI_Select')
 
         # if got passed through the ship() object, lets call it to see if a target has been
         # selected yet... otherwise we wait.  If long route, it may take a few seconds
         if target_select_cb is not None:
-            while not target_select_cb()['target']:
-                sleep(1)
+            target_deadline = time.monotonic() + 30
+            while time.monotonic() < target_deadline and not target_select_cb()['target']:
+                self.ap._interruptible_sleep(1)
+            if not target_select_cb()['target']:
+                logger.warning(f"Timed out waiting for a route to '{target_name}'.")
+                ap.keys.send('GalaxyMapOpen')
+                return False
 
         # Close Galaxy map
         ap.keys.send('GalaxyMapOpen')
-        sleep(2)
+        self.ap._interruptible_sleep(2)
         return True
 
     def set_gal_map_destination_text_odyssey(self, ap, target_name) -> bool:
@@ -128,7 +133,7 @@ class EDGalaxyMap:
 
         # Check if the current nav route is to the target system
         last_nav_route_sys = ap.nav_route.get_last_system()
-        last_nav_route_sys_uc = last_nav_route_sys.upper()
+        last_nav_route_sys_uc = (last_nav_route_sys or "").upper()
         if last_nav_route_sys_uc == target_name_uc:
             # Close Galaxy map
             ap.keys.send('GalaxyMapOpen')
@@ -136,61 +141,64 @@ class EDGalaxyMap:
 
         # navigate to and select: search field
         ap.keys.send('UI_Up')
-        sleep(0.05)
+        self.ap._interruptible_sleep(0.05)
         ap.keys.send('UI_Select')
-        sleep(0.05)
+        self.ap._interruptible_sleep(0.05)
 
         # type in the System name
         ap.keys.type_text(target_name_uc, interval=0.25)
         logger.debug(f"Entered system name: {target_name_uc}.")
-        sleep(0.05)
+        self.ap._interruptible_sleep(0.05)
 
         # send enter key (removes focus out of input field)
         ap.keys.send_key('Down', 28)  # 28=ENTER
-        sleep(0.05)
+        self.ap._interruptible_sleep(0.05)
         ap.keys.send_key('Up', 28)  # 28=ENTER
-        sleep(0.05)
+        self.ap._interruptible_sleep(0.05)
 
         # According to some reports, the ENTER key does not always reselect the text
         # box, so this down and up will reselect the text box.
         ap.keys.send('UI_Down')
-        sleep(0.05)
+        self.ap._interruptible_sleep(0.05)
         ap.keys.send('UI_Up')
-        sleep(0.05)
+        self.ap._interruptible_sleep(0.05)
 
         # navigate to and select: search button
         ap.keys.send('UI_Right')  # to >| button
-        sleep(0.05)
+        self.ap._interruptible_sleep(0.05)
 
         correct_route = False
-        while not correct_route:
+        for _ in range(10):
+            ap.raise_if_stop_requested()
             # Store the current nav route system
             last_nav_route_sys = ap.nav_route.get_last_system()
-            last_nav_route_sys_uc = last_nav_route_sys.upper()
+            last_nav_route_sys_uc = (last_nav_route_sys or "").upper()
             logger.debug(f"Previous Nav Route dest: {last_nav_route_sys_uc}.")
 
             # Select first (or next) system
             ap.keys.send('UI_Select')  # Select >| button
-            sleep(self.SystemSelectDelay)
+            self.ap._interruptible_sleep(self.SystemSelectDelay)
 
             # zoom camera which puts focus back on the map
             ap.keys.send('CamZoomIn')
-            sleep(0.5)
+            self.ap._interruptible_sleep(0.5)
 
             # plot route. Not that once the system has been selected, as shown in the info panel
             # and the gal map has focus, there is no need to wait for the map to bring the system
             # to the center screen, the system can be selected while the map is moving.
             ap.keys.send('UI_Select', hold=0.75)
 
-            sleep(0.05)
+            self.ap._interruptible_sleep(0.05)
 
             # if got passed through the ship() object, lets call it to see if a target has been
             # selected yet... otherwise we wait.  If long route, it may take a few seconds
             if ap.nav_route is not None:
                 logger.debug(f"Waiting for Nav Route to update.")
-                while 1:
+                route_deadline = time.monotonic() + 30
+                while time.monotonic() < route_deadline:
+                    ap.raise_if_stop_requested()
                     curr_nav_route_sys = ap.nav_route.get_last_system()
-                    curr_nav_route_sys_uc = curr_nav_route_sys.upper()
+                    curr_nav_route_sys_uc = (curr_nav_route_sys or "").upper()
                     # Check if the nav route has been changed (right or wrong)
                     if curr_nav_route_sys_uc != last_nav_route_sys_uc:
                         logger.debug(f"Nav Route dest changed from: {last_nav_route_sys_uc} to: {curr_nav_route_sys_uc}.")
@@ -205,15 +213,19 @@ class EDGalaxyMap:
                             logger.debug(f"Nav Route updated with wrong target: {curr_nav_route_sys_uc}. Select next target.")
                             ap.keys.send('UI_Up')
                             break
+                    ap._interruptible_sleep(0.1)
             else:
                 # Cannot check route, so assume right
                 logger.debug(f"Unable to check Nav Route, so assuming it is correct.")
                 correct_route = True
 
+            if correct_route:
+                break
+
         # Close Galaxy map
         ap.keys.send('GalaxyMapOpen')
-        sleep(0.5)
-        return True
+        self.ap._interruptible_sleep(0.5)
+        return correct_route
 
     def set_next_system(self, ap, target_system) -> bool:
         """ Sets the next system to jump to, or the final system to jump to.

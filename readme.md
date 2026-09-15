@@ -60,7 +60,7 @@ Also Note: This repository is provided for educational purposes as a in depth pr
 Aids with colonization construction projects, determining what commodities are needed for each project. Additional information can be found [here](docs/ColonizationEditor.md). 
 
 # Limitations:
-* Will only work with Windows (not Linux)
+* Supported hosts are Windows and native macOS with MoltenVR. Linux is not supported.
 * Default HUD colors must be used, if you changed those colors, this autopilot will not work
 * Borderless Elite Dangerous (ED) configuration required,  Windowed does not work due to how the screen is grabbed
 * Screen Resolution/scale X, Y:  The templates were captured on a 3440x1440 resolution/game configuration.  These need to be scaled

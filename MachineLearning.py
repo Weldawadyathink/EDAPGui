@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import enum
 import os
+import threading
 from dataclasses import dataclass
 import cv2
 import torch
@@ -36,6 +37,7 @@ class MachLearn:
     def __init__(self, ed_ap, cb):
         self.ap = ed_ap
         self.ap_ckb = cb
+        self._prediction_lock = threading.Lock()
 
         # The MoltenVR launcher limits OpenMP for PaddleOCR stability. Restore
         # a small PyTorch intra-op pool so YOLO does not inherit one thread.
@@ -114,6 +116,10 @@ class MachLearn:
         return matches or None
 
     def model_predict(self, model: ModelType, image, class_name: str) -> list[MachLearnMatch] | None:
+        with self._prediction_lock:
+            return self._model_predict(model, image, class_name)
+
+    def _model_predict(self, model: ModelType, image, class_name: str) -> list[MachLearnMatch] | None:
         """ Performs a prediction of an image using the relevant model and returns the results.
         @param model: Model type (i.e. Compass or Target)
         @param image: The image to check.
