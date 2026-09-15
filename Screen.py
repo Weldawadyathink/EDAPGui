@@ -2,13 +2,17 @@ from __future__ import annotations
 import mmap
 import os
 import struct
+import sys
 import time
 import typing
 from copy import copy
 
 import cv2
-import win32con
-import win32gui
+if sys.platform == "win32":
+    import win32con
+    import win32gui
+elif sys.platform == "darwin":
+    from MacOSBridge import MacOSBridgeError, bridge as macos_bridge
 import numpy as np
 from numpy import array
 import mss
@@ -39,6 +43,13 @@ BRIDGE_HEADER = struct.Struct("<QII")
 def set_focus_elite_window():
     """ set focus to the ED window, if ED does not have focus then the keystrokes will go to the window
     that does have focus. """
+    if sys.platform == "darwin":
+        try:
+            macos_bridge.focus_elite()
+        except MacOSBridgeError as exc:
+            logger.warning(f"set_focus_elite_window: {exc}")
+        return
+
     ed_title = "Elite - Dangerous (CLIENT)"
 
     # TODO - determine if GetWindowText is faster than FindWindow if ED is in foreground
@@ -198,11 +209,33 @@ class Screen:
         logger.debug('screen position: x='+str(self.screen_left)+" y="+str(self.screen_top))
         logger.debug('Default scale X, Y: ' + str(self.scaleX) + ", " + str(self.scaleY))
 
+        # A window-specific native capture has authoritative pixel dimensions.
+        # AppKit window bounds are measured in points and must not replace them.
+        if self._bridge_path:
+            try:
+                with open(self._bridge_path, "rb") as bridge_file:
+                    _, width, height = BRIDGE_HEADER.unpack(bridge_file.read(BRIDGE_HEADER.size))
+                if width and height:
+                    self.screen_width = width
+                    self.screen_height = height
+                    self.aspect_ratio = width / height
+                    self.mon = {"left": 0, "top": 0, "width": width, "height": height}
+                    logger.info(f"Using native Elite window capture at {width}x{height}.")
+            except (OSError, struct.error):
+                pass
+
     @staticmethod
     def get_elite_window_rect() -> typing.Tuple[int, int, int, int] | None:
         """ Gets the ED window rectangle.
         Returns (left, top, right, bottom) or None.
         """
+        if sys.platform == "darwin":
+            try:
+                info = macos_bridge.window_info()
+                left, top = int(info["x"]), int(info["y"])
+                return left, top, left + int(info["width"]), top + int(info["height"])
+            except MacOSBridgeError:
+                return None
         hwnd = win32gui.FindWindow(None, elite_dangerous_window)
         if hwnd:
             rect = win32gui.GetWindowRect(hwnd)
@@ -214,6 +247,12 @@ class Screen:
     def elite_window_exists() -> bool:
         """ Does the ED Client Window exist (i.e. is ED running)
         """
+        if sys.platform == "darwin":
+            try:
+                macos_bridge.window_info()
+                return True
+            except MacOSBridgeError:
+                return False
         hwnd = win32gui.FindWindow(None, elite_dangerous_window)
         if hwnd:
             return True

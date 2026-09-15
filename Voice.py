@@ -2,8 +2,11 @@
 
 from threading import Thread
 import kthread
+import subprocess
+import sys
 import queue
-import pyttsx3
+if sys.platform == "win32":
+    import pyttsx3
 from time import sleep
 
 #rate = voiceEngine.getProperty('rate')
@@ -62,6 +65,16 @@ class Voice:
         self.v_quit = True
         
     def voice_exec(self):
+        if sys.platform == "darwin":
+            while not self.v_quit:
+                try:
+                    words = self.q.get(timeout=1)
+                    self.q.task_done()
+                    if words is not None:
+                        subprocess.run(["/usr/bin/say", "-r", "160", str(words)], check=False)
+                except queue.Empty:
+                    pass
+            return
         try:
             engine = pyttsx3.init()
         except Exception as exc:

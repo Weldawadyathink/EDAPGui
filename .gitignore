@@ -30,6 +30,11 @@ runs/
 # MoltenVR/macOS native bridge build and runtime output
 /platform/macos/macos_capture_bridge
 /platform/macos/macos_overlay_bridge
+/platform/macos/macos_input_bridge
+/platform/macos/macos_hotkey_bridge
 /.wine-capture/
 /edapgui-launch.log
 /venv/
+/.venv-macos/
+/.native-runtime/
+/edapgui-native.log

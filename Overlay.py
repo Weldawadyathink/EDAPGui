@@ -1,15 +1,18 @@
 import json
 import os
+import sys
 import threading
 from copy import copy
-from ctypes.wintypes import PRECT
 from datetime import datetime
 from time import sleep
 
-import win32api
-import win32con
-import win32gui
-import win32ui
+if sys.platform == "win32":
+    import win32api
+    import win32con
+    import win32gui
+    import win32ui
+elif sys.platform == "darwin":
+    from MacOSBridge import MacOSBridgeError, bridge as macos_bridge
 from Screen_Regions import Quad, Point
 
 """
@@ -76,11 +79,7 @@ class Overlay:
         # Keep EDAP's overlay model, but publish it to a native macOS renderer.
         if self.native_path:
             if self.parent != "":
-                self.tHwnd = win32gui.FindWindow(None, self.parent)
-                if self.tHwnd:
-                    rect = win32gui.GetWindowRect(self.tHwnd)
-                    self.targetRect = Vector(
-                        rect[0], rect[1], rect[2] - rect[0], rect[3] - rect[1])
+                self._update_native_target_rect()
             self._write_native_state()
             self._overlay_update_thread = threading.Thread(
                 target=self._overlay_cleanup_loop, daemon=True)
@@ -214,10 +213,7 @@ class Overlay:
         if self.disabled:
             return
         if self.native_path:
-            if self.tHwnd:
-                rect = win32gui.GetWindowRect(self.tHwnd)
-                self.targetRect = Vector(
-                    rect[0], rect[1], rect[2] - rect[0], rect[3] - rect[1])
+            self._update_native_target_rect()
             self._write_native_state()
             return
         if self.hWindow is None:
@@ -308,6 +304,22 @@ class Overlay:
         except (OSError, TypeError, AttributeError, RuntimeError):
             # Overlay diagnostics must never terminate the autopilot.
             return
+
+    def _update_native_target_rect(self):
+        try:
+            if sys.platform == "darwin":
+                info = macos_bridge.window_info()
+                self.tHwnd = info["pid"]
+                self.targetRect = Vector(
+                    info["x"], info["y"], info["width"], info["height"])
+            else:
+                self.tHwnd = win32gui.FindWindow(None, self.parent)
+                if self.tHwnd:
+                    rect = win32gui.GetWindowRect(self.tHwnd)
+                    self.targetRect = Vector(
+                        rect[0], rect[1], rect[2] - rect[0], rect[3] - rect[1])
+        except (MacOSBridgeError if sys.platform == "darwin" else OSError):
+            pass
 
     def _overlay_cleanup_loop(self):
         """ Cleans up the overlay by removing overlays that are old from the list. """

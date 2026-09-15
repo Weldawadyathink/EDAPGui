@@ -12,7 +12,7 @@ import threading
 from time import sleep
 from typing import TypedDict
 
-import keyboard
+import GlobalHotkeys as keyboard
 import webbrowser
 # import requests
 
@@ -23,9 +23,10 @@ from tkinter import filedialog as fd
 from tkinter import messagebox
 from tkinter import ttk
 import sv_ttk
-import pywinstyles
-import win32gui
 import sys  # Do not delete - prevents a 'super' error from tktoolip.
+if sys.platform == "win32":
+    import pywinstyles
+    import win32gui
 from tktooltip import ToolTip  # In requirements.txt as 'tkinter-tooltip'.
 
 from EDAPCalibration import Calibration
@@ -278,16 +279,15 @@ class APGui:
         Global trap for these keys, the 'end' key will stop any current AP action the 'home' key will start the
         FSD Assist. May want another to start SC Assist.
         """
-        # Remove all the hotkeys. Adding a dummy hotkey will eliminate an error if none had been configured.
-        keyboard.add_hotkey(' ', print)
-        keyboard.remove_all_hotkeys()
-
         if self.ed_ap.config['HotkeysEnable']:
-            # Add the desired hotkeys
-            keyboard.add_hotkey(self.ed_ap.config['HotKey_StopAllAssists'], self.stop_all_assists)
-            keyboard.add_hotkey(self.ed_ap.config['HotKey_StartFSD'], self.callback, args=('fsd_start', None))
-            keyboard.add_hotkey(self.ed_ap.config['HotKey_StartSC'], self.callback, args=('sc_start', None))
-            keyboard.add_hotkey(self.ed_ap.config['HotKey_StartRobigo'], self.callback, args=('robigo_start', None))
+            keyboard.configure({
+                self.ed_ap.config['HotKey_StopAllAssists']: (self.stop_all_assists, ()),
+                self.ed_ap.config['HotKey_StartFSD']: (self.callback, ('fsd_start', None)),
+                self.ed_ap.config['HotKey_StartSC']: (self.callback, ('sc_start', None)),
+                self.ed_ap.config['HotKey_StartRobigo']: (self.callback, ('robigo_start', None)),
+            })
+        else:
+            keyboard.remove_all_hotkeys()
 
             # TODO - Enable these to allow pips to be controlled by EDAP when using the defined keys (tbd).
             # keyboard.add_hotkey('up', self.callback, args=('up', None))
@@ -1394,6 +1394,8 @@ class APGui:
 
 
 def apply_theme_to_titlebar(root):
+    if sys.platform != "win32":
+        return
     version = sys.getwindowsversion()
 
     if version.major == 10 and version.build >= 22000:
@@ -1419,17 +1421,15 @@ def main():
     # place the control window elsewhere without changing Windows behavior.
     if os.environ.get("EDAP_GUI_X") is not None:
         root.update_idletasks()
-        hwnd = win32gui.FindWindow(None, "EDAutopilot " + EDAP_VERSION)
-        if hwnd:
-            rect = win32gui.GetWindowRect(hwnd)
-            win32gui.MoveWindow(
-                hwnd,
-                int(os.environ["EDAP_GUI_X"]),
-                int(os.environ.get("EDAP_GUI_Y", "25")),
-                rect[2] - rect[0],
-                rect[3] - rect[1],
-                True,
-            )
+        x = int(os.environ["EDAP_GUI_X"])
+        y = int(os.environ.get("EDAP_GUI_Y", "25"))
+        if sys.platform == "win32":
+            hwnd = win32gui.FindWindow(None, "EDAutopilot " + EDAP_VERSION)
+            if hwnd:
+                rect = win32gui.GetWindowRect(hwnd)
+                win32gui.MoveWindow(hwnd, x, y, rect[2] - rect[0], rect[3] - rect[1], True)
+        else:
+            root.geometry(f"+{x}+{y}")
 
     sv_ttk.set_theme("dark")
 

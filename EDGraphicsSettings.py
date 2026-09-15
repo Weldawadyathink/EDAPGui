@@ -2,7 +2,8 @@ from os.path import isfile
 
 from EDlogger import logger
 import xmltodict
-from os import environ
+from pathlib import Path
+from PlatformPaths import elite_options_dir
 
 
 class EDGraphicsSettings:
@@ -15,11 +16,11 @@ class EDGraphicsSettings:
         self.screenheight = ''
         self.monitor = ''
         self.fov = ''
-        self.display_settings_filepath = display_file_path if display_file_path else \
-            (environ[
-                 'LOCALAPPDATA'] + "\\Frontier Developments\\Elite Dangerous\\Options\\Graphics\\DisplaySettings.xml")
-        self.settings_filepath = settings_file_path if settings_file_path else \
-            (environ['LOCALAPPDATA'] + "\\Frontier Developments\\Elite Dangerous\\Options\\Graphics\\Settings.xml")
+        graphics_dir = Path(elite_options_dir()) / "Graphics"
+        self.display_settings_filepath = display_file_path if display_file_path else str(
+            graphics_dir / "DisplaySettings.xml")
+        self.settings_filepath = settings_file_path if settings_file_path else str(
+            graphics_dir / "Settings.xml")
 
         if not isfile(self.display_settings_filepath):
             logger.error(

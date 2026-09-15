@@ -8,7 +8,6 @@ from Screen_Regions import Quad, load_calibrated_regions
 from StatusParser import StatusParser
 from time import sleep
 from EDlogger import logger
-from pyautogui import typewrite
 
 
 class EDGalaxyMap:
@@ -92,7 +91,7 @@ class EDGalaxyMap:
         ap.keys.send('UI_Select')
         sleep(2)
 
-        typewrite(target_name, interval=0.25)
+        ap.keys.type_text(target_name, interval=0.25)
         sleep(1)
 
         # send enter key
@@ -139,7 +138,7 @@ class EDGalaxyMap:
         sleep(0.05)
 
         # type in the System name
-        typewrite(target_name_uc, interval=0.25)
+        ap.keys.type_text(target_name_uc, interval=0.25)
         logger.debug(f"Entered system name: {target_name_uc}.")
         sleep(0.05)
 

@@ -1,7 +1,6 @@
 from time import sleep
 
-import keyboard
-import win32gui
+import GlobalHotkeys as keyboard
 
 from EDJournal import *
 from EDKeys import *

@@ -12,6 +12,19 @@ xcrun swiftc -O \
   "$SCRIPT_DIR/macos_capture_bridge.swift" \
   -o "$SCRIPT_DIR/macos_capture_bridge"
 
+xcrun swiftc -O \
+  -framework AppKit \
+  -framework ApplicationServices \
+  -framework CoreGraphics \
+  "$SCRIPT_DIR/macos_input_bridge.swift" \
+  -o "$SCRIPT_DIR/macos_input_bridge"
+
+xcrun swiftc -O \
+  -framework ApplicationServices \
+  -framework CoreGraphics \
+  "$SCRIPT_DIR/macos_hotkey_bridge.swift" \
+  -o "$SCRIPT_DIR/macos_hotkey_bridge"
+
 xcrun clang -O2 -fobjc-arc \
   -framework AppKit \
   "$SCRIPT_DIR/macos_overlay_bridge.m" \

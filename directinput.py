@@ -4,13 +4,17 @@
 # http://www.gamespp.com/directx/directInputKeyboardScanCodes.html
 
 import ctypes
+import sys
 import time
 
-# A normal ctypes function releases the GIL while calling into Wine. Wine can
-# re-enter its input stack during SendInput, which has caused Python thread
-# state crashes on return. PyDLL keeps the GIL held around the Win32 call.
-_user32 = ctypes.PyDLL("user32.dll", use_last_error=True)
-SendInput = _user32.SendInput
+if sys.platform == "win32":
+    # A normal ctypes function releases the GIL while calling into Wine. Wine can
+    # re-enter its input stack during SendInput, which has caused Python thread
+    # state crashes on return. PyDLL keeps the GIL held around the Win32 call.
+    _user32 = ctypes.PyDLL("user32.dll", use_last_error=True)
+    SendInput = _user32.SendInput
+else:
+    from MacOSBridge import MacOSBridgeError, bridge as _macos_bridge
 
 # Listed are keyboard scan code constants, taken from dinput.h
 SCANCODE = {
@@ -304,13 +308,17 @@ class Input(ctypes.Structure):
                 ("ii", Input_I)]
 
 
-SendInput.argtypes = (ctypes.c_uint, ctypes.POINTER(Input), ctypes.c_int)
-SendInput.restype = ctypes.c_uint
+if sys.platform == "win32":
+    SendInput.argtypes = (ctypes.c_uint, ctypes.POINTER(Input), ctypes.c_int)
+    SendInput.restype = ctypes.c_uint
 
 
 # Actual Functions
 
 def PressKey(hexKeyCode):
+    if sys.platform == "darwin":
+        _macos_bridge.key(hexKeyCode, True)
+        return 1
     extra = ctypes.c_ulong(0)
     ii_ = Input_I()
     ii_.ki = KeyBdInput(0, hexKeyCode, 0x0008, 0, ctypes.pointer(extra))
@@ -318,6 +326,14 @@ def PressKey(hexKeyCode):
     return SendInput(1, ctypes.pointer(x), ctypes.sizeof(x))
 
 def ReleaseKey(hexKeyCode):
+    if sys.platform == "darwin":
+        try:
+            _macos_bridge.key(hexKeyCode, False)
+            return 1
+        except MacOSBridgeError:
+            # Stop/quit calls release defensively even when Elite has already
+            # closed. A missing destination must never prevent EDAP shutdown.
+            return 0
     extra = ctypes.c_ulong(0)
     ii_ = Input_I()
     ii_.ki = KeyBdInput(0, hexKeyCode, 0x0008 | 0x0002, 0, ctypes.pointer(extra))

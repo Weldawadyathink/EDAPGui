@@ -12,6 +12,7 @@ private struct Arguments {
     let height: Int
     let fps: Int32
     let excludedPID: pid_t?
+    let windowTitle: String?
 
     init?() {
         let values = CommandLine.arguments
@@ -31,6 +32,7 @@ private struct Arguments {
         self.height = height
         self.fps = fps
         self.excludedPID = value(after: "--exclude-pid").flatMap { pid_t($0) }
+        self.windowTitle = value(after: "--window-title")
     }
 }
 
@@ -120,7 +122,7 @@ private func fail(_ message: String, code: Int32 = 1) -> Never {
 }
 
 guard let arguments = Arguments() else {
-    fail("usage: macos_capture_bridge --output PATH --width N --height N --fps N", code: 2)
+    fail("usage: macos_capture_bridge --output PATH --width N --height N --fps N [--window-title TITLE]", code: 2)
 }
 
 guard CGPreflightScreenCaptureAccess() || CGRequestScreenCaptureAccess() else {
@@ -166,15 +168,29 @@ configuration.queueDepth = 3
 configuration.showsCursor = false
 configuration.capturesAudio = false
 
-let excludedApplications: [SCRunningApplication]
-if let excludedPID = arguments.excludedPID,
-   let application = availableContent?.applications.first(where: { $0.processID == excludedPID }) {
-    excludedApplications = [application]
+let filter: SCContentFilter
+if let wantedTitle = arguments.windowTitle {
+    let needle = wantedTitle.lowercased()
+    guard let window = availableContent?.windows.first(where: {
+        ($0.title ?? "").lowercased().contains(needle)
+    }) else {
+        fail("could not find a capturable Elite window named '\(wantedTitle)'")
+    }
+    FileHandle.standardError.write(Data((
+        "macos_capture_bridge: capturing '\(window.title ?? wantedTitle)' " +
+        "owned by \(window.owningApplication?.applicationName ?? "unknown")\n").utf8))
+    filter = SCContentFilter(desktopIndependentWindow: window)
 } else {
-    excludedApplications = []
+    let excludedApplications: [SCRunningApplication]
+    if let excludedPID = arguments.excludedPID,
+       let application = availableContent?.applications.first(where: { $0.processID == excludedPID }) {
+        excludedApplications = [application]
+    } else {
+        excludedApplications = []
+    }
+    filter = SCContentFilter(
+        display: display, excludingApplications: excludedApplications, exceptingWindows: [])
 }
-let filter = SCContentFilter(
-    display: display, excludingApplications: excludedApplications, exceptingWindows: [])
 let stream = SCStream(filter: filter, configuration: configuration, delegate: nil)
 let captureQueue = DispatchQueue(label: "com.moltenvr.edap.capture", qos: .userInteractive)
 do {

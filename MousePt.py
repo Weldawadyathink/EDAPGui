@@ -1,4 +1,6 @@
-from pynput.mouse import *
+import sys
+if sys.platform == "win32":
+    from pynput.mouse import Button, Controller, Listener
 
 from time import sleep
 
@@ -19,7 +21,7 @@ class MousePoint:
         self.term = False
  
         self.ls = None # Listener(on_move=self.on_move, on_click=self.on_click, on_scroll=self.on_scroll)
-        self.ms = Controller()    
+        self.ms = Controller() if sys.platform == "win32" else None
 
     def on_move(self, x, y):
         return True
@@ -37,6 +39,8 @@ class MousePoint:
         
         
     def get_location(self):
+        if sys.platform == "darwin":
+            raise NotImplementedError("Interactive mouse calibration is not yet available in the native host")
         self.term = False
         self.x = 0
         self.y = 0
@@ -55,6 +59,8 @@ class MousePoint:
  
         
     def do_click(self, x, y, delay = 0.1):
+        if sys.platform == "darwin":
+            raise NotImplementedError("Synthetic mouse clicks are not yet available in the native host")
         # position the mouse and do left click, duration in seconds
         self.ms.position=(x, y)
         #hself.ms.click(Button.left)

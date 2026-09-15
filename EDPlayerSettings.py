@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from os import environ, listdir
+from os import listdir
 from os.path import getmtime, isfile, join
 import xmltodict
 
 from EDlogger import logger
+from PlatformPaths import elite_options_dir
 
 class EDPlayerSettings:
     """ Handles the Player settings (Custom.4.3.misc) XML file. """
@@ -73,7 +74,7 @@ class EDPlayerSettings:
         This routine will grab the *.misc file which is the latest modified
         :return:
         """
-        path_bindings = environ['LOCALAPPDATA'] + "\\Frontier Developments\\Elite Dangerous\\Options\\Player"
+        path_bindings = join(elite_options_dir(), "Player")
         try:
             list_of_bindings = [join(path_bindings, f) for f in listdir(path_bindings) if
                                 isfile(join(path_bindings, f)) and f.endswith('.misc')]

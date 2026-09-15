@@ -1,16 +1,16 @@
 from __future__ import annotations
 
 import json
-from os import environ, listdir
+from os import listdir
 import os
 from os.path import getmtime, isfile, join
 from time import sleep
 from typing import Any, final
 from xml.etree.ElementTree import ParseError, parse
 
-import win32gui
 import xmltodict
 
+from PlatformPaths import elite_options_dir
 from Screen import set_focus_elite_window
 from directinput import *
 from EDlogger import logger
@@ -235,7 +235,7 @@ class EDKeys:
         return " and ".join(ret)
 
     def get_latest_keybinds(self):
-        path_bindings = environ['LOCALAPPDATA'] + r"\Frontier Developments\Elite Dangerous\Options\Bindings"
+        path_bindings = join(elite_options_dir(), "Bindings")
         try:
             list_of_bindings = [join(path_bindings, f) for f in listdir(path_bindings) if
                                 isfile(join(path_bindings, f)) and f.endswith('.binds')]
@@ -294,6 +294,40 @@ class EDKeys:
             ReleaseKey(key)
         else:
             PressKey(key)
+
+    def type_text(self, value, interval=0.05):
+        """Type printable text through the same hardware-key path as controls."""
+        char_keys = {
+            **{chr(ord('a') + i): f"Key_{chr(ord('A') + i)}" for i in range(26)},
+            **{str(i): f"Key_{i}" for i in range(10)},
+            ' ': 'Key_Space', '-': 'Key_Minus', '=': 'Key_Equals',
+            '.': 'Key_Period', ',': 'Key_Comma', '/': 'Key_Slash',
+            "'": 'Key_Apostrophe', '[': 'Key_LeftBracket', ']': 'Key_RightBracket',
+            ';': 'Key_SemiColon', '\\': 'Key_BackSlash', '`': 'Key_Grave',
+        }
+        shifted = {
+            '!': '1', '@': '2', '#': '3', '$': '4', '%': '5', '^': '6', '&': '7',
+            '*': '8', '(': '9', ')': '0', '_': '-', '+': '=', ':': ';', '?': '/',
+            '"': "'", '<': ',', '>': '.', '{': '[', '}': ']', '|': '\\', '~': '`',
+        }
+        for char in str(value):
+            self._raise_if_stop_requested()
+            base = shifted.get(char, char.lower())
+            key_name = char_keys.get(base)
+            if key_name is None:
+                logger.warning(f"Cannot type unsupported character {char!r}")
+                continue
+            needs_shift = char.isupper() or char in shifted
+            if needs_shift:
+                PressKey(SCANCODE['Key_LeftShift'])
+                self._interruptible_sleep(self.key_mod_delay)
+            PressKey(SCANCODE[key_name])
+            self._interruptible_sleep(0.02)
+            ReleaseKey(SCANCODE[key_name])
+            if needs_shift:
+                self._interruptible_sleep(self.key_mod_delay)
+                ReleaseKey(SCANCODE['Key_LeftShift'])
+            self._interruptible_sleep(interval)
 
     def send(self, key_binding, hold=None, repeat=1, repeat_delay=None, state=None):
         """ Send a key based on the defined keybind
