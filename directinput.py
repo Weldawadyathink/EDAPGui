@@ -339,3 +339,17 @@ def ReleaseKey(hexKeyCode):
     ii_.ki = KeyBdInput(0, hexKeyCode, 0x0008 | 0x0002, 0, ctypes.pointer(extra))
     x = Input(ctypes.c_ulong(1), ii_)
     return SendInput(1, ctypes.pointer(x), ctypes.sizeof(x))
+
+def ReleaseAllKeys():
+    """Release native input state in one bounded request on macOS.
+
+    Returning True means the platform handled the operation, including the
+    harmless case where no input helper had ever been started.
+    """
+    if sys.platform != "darwin":
+        return False
+    try:
+        _macos_bridge.release_all()
+    except MacOSBridgeError:
+        pass
+    return True

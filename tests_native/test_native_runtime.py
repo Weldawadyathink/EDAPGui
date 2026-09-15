@@ -1,6 +1,7 @@
 import json
 import os
 from pathlib import Path
+import queue
 import re
 import struct
 import tempfile
@@ -12,6 +13,9 @@ from unittest import mock
 import numpy as np
 
 import Overlay as overlay_module
+import EDKeys as edkeys_module
+from MacOSBridge import MacOSBridge
+from EDAPGui import APGui
 from EDKeys import EDKeys
 from Screen import BRIDGE_HEADER, Screen
 from Screen_Regions import Point, Quad
@@ -28,14 +32,17 @@ class NativeCaptureTests(unittest.TestCase):
             frame_path.write_bytes(BRIDGE_HEADER.pack(2, width, height) + pixels)
             with mock.patch.dict(os.environ, {
                 "EDAP_CAPTURE_FILE": str(frame_path),
-                "EDAP_CAPTURE_STALE_SECONDS": "0.01",
+                "EDAP_CAPTURE_STALE_SECONDS": "0.1",
             }, clear=False):
                 screen = Screen(lambda *_: None)
-                self.assertEqual(screen.get_screen_size(), (width, height))
-                self.assertEqual(screen._get_bridge_region(1, 1, 5, 3).shape, (2, 4, 4))
-                time.sleep(0.02)
-                self.assertIsNone(screen._get_bridge_region(0, 0, width, height))
-                screen.close()
+                try:
+                    self.assertEqual(screen.get_screen_size(), (width, height))
+                    self.assertEqual(
+                        screen._get_bridge_region(1, 1, 5, 3).shape, (2, 4, 4))
+                    time.sleep(0.12)
+                    self.assertIsNone(screen._get_bridge_region(0, 0, width, height))
+                finally:
+                    screen.close()
 
 
 class NativeOverlayTests(unittest.TestCase):
@@ -79,6 +86,116 @@ class NativeOverlayTests(unittest.TestCase):
 
 
 class CooperativeRuntimeTests(unittest.TestCase):
+    def test_coalesced_background_task_runs_latest_request(self):
+        gui = APGui.__new__(APGui)
+        gui._background_tasks = {}
+        gui._pending_background_tasks = {}
+        gui._ui_queue = queue.Queue()
+        gui._closing = False
+        gui.log_msg = lambda *_: None
+
+        release_first = threading.Event()
+        superseded_ran = threading.Event()
+        latest_ran = threading.Event()
+        self.assertTrue(gui._start_background_task(
+            "set throttle", lambda: release_first.wait(1), announce=False, coalesce=True))
+        self.assertTrue(gui._start_background_task(
+            "set throttle", superseded_ran.set, announce=False, coalesce=True))
+        self.assertTrue(gui._start_background_task(
+            "set throttle", latest_ran.set, announce=False, coalesce=True))
+
+        release_first.set()
+        message, body = gui._ui_queue.get(timeout=1)
+        gui._dispatch_callback(message, body)
+        self.assertTrue(latest_ran.wait(1))
+        self.assertFalse(superseded_ran.is_set())
+        message, body = gui._ui_queue.get(timeout=1)
+        gui._dispatch_callback(message, body)
+        self.assertNotIn("set throttle", gui._background_tasks)
+
+    def test_stop_cancels_queued_command_and_new_command_clears_stop(self):
+        gui = APGui.__new__(APGui)
+        gui._background_tasks = {}
+        gui._pending_background_tasks = {"set throttle": (lambda: None, False, True, True)}
+        gui._ui_queue = queue.Queue()
+        gui._closing = False
+        gui.log_msg = lambda *_: None
+        gui.callback = lambda *_: None
+        gui.ed_ap = mock.Mock()
+        gui.ed_ap.stop_event = threading.Event()
+
+        gui.stop_all_assists()
+        self.assertEqual(gui._pending_background_tasks, {})
+        gui.ed_ap.request_stop_all.assert_called_once_with()
+
+        gui.ed_ap.stop_event.set()
+        ran = threading.Event()
+        gui._start_background_task(
+            "set throttle", ran.set, announce=False, clear_stop=True)
+        self.assertTrue(ran.wait(1))
+        self.assertFalse(gui.ed_ap.stop_event.is_set())
+
+    def test_new_command_supersedes_queue_behind_finished_worker(self):
+        gui = APGui.__new__(APGui)
+        gui._ui_queue = queue.Queue()
+        gui._closing = False
+        gui.log_msg = lambda *_: None
+        gui._pending_background_tasks = {}
+
+        old_worker = threading.Thread(target=lambda: None)
+        old_worker.start()
+        old_worker.join()
+        stale_ran = threading.Event()
+        latest_ran = threading.Event()
+        gui._background_tasks = {"set throttle": old_worker}
+        gui._pending_background_tasks = {
+            "set throttle": (stale_ran.set, False, True, False)}
+
+        gui._start_background_task(
+            "set throttle", latest_ran.set, announce=False, coalesce=True)
+        self.assertTrue(latest_ran.wait(1))
+        self.assertNotIn("set throttle", gui._pending_background_tasks)
+
+        message, body = gui._ui_queue.get(timeout=1)
+        gui._dispatch_callback(message, body)
+        self.assertFalse(stale_ran.is_set())
+
+    def test_key_failure_attempts_to_release_entire_chord(self):
+        keys = EDKeys.__new__(EDKeys)
+        keys.ap_ckb = lambda *_: None
+        keys.stop_event = threading.Event()
+        keys.key_mod_delay = 0
+        keys.key_def_hold_time = 0
+        keys.key_repeat_delay = 0
+        keys.activate_window = False
+        keys.keys = {"SetSpeed50": {"key": 23, "mods": [29]}}
+        keys.reversed_dict = {23: "Key_I"}
+        released = []
+
+        def press(scan_code):
+            if scan_code == 23:
+                raise RuntimeError("simulated window replacement")
+
+        with mock.patch.object(edkeys_module, "PressKey", side_effect=press), \
+                mock.patch.object(edkeys_module, "ReleaseKey", side_effect=released.append):
+            with self.assertRaises(RuntimeError):
+                keys.send("SetSpeed50")
+
+        self.assertEqual(released, [23, 29])
+
+    def test_native_release_all_does_not_start_an_idle_helper(self):
+        bridge = MacOSBridge()
+        with mock.patch.object(bridge, "_start") as start:
+            self.assertIsNone(bridge.release_all())
+        start.assert_not_called()
+
+    def test_native_release_all_avoids_per_key_cleanup(self):
+        keys = EDKeys.__new__(EDKeys)
+        with mock.patch.object(edkeys_module, "ReleaseAllKeys", return_value=True), \
+                mock.patch.object(edkeys_module, "ReleaseKey") as release:
+            keys.release_all_keys()
+        release.assert_not_called()
+
     def test_status_wait_stops_immediately(self):
         parser = StatusParser.__new__(StatusParser)
         parser.stop_event = threading.Event()

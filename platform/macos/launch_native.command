@@ -49,11 +49,28 @@ print -r -- "$$" >"$LOCK_DIR/pid"
 
 capture_pid=""
 overlay_pid=""
+python_pid=""
+
+wait_for_child_exit() {
+  local child_pid="$1"
+  [[ -z "$child_pid" ]] && return
+  for _ in {1..40}; do
+    ! kill -0 "$child_pid" >/dev/null 2>&1 && break
+    sleep 0.05
+  done
+  if kill -0 "$child_pid" >/dev/null 2>&1; then
+    kill -KILL "$child_pid" >/dev/null 2>&1 || true
+  fi
+  wait "$child_pid" 2>/dev/null || true
+}
+
 cleanup() {
+  [[ -n "$python_pid" ]] && kill "$python_pid" >/dev/null 2>&1 || true
   [[ -n "$capture_pid" ]] && kill "$capture_pid" >/dev/null 2>&1 || true
   [[ -n "$overlay_pid" ]] && kill "$overlay_pid" >/dev/null 2>&1 || true
-  [[ -n "$capture_pid" ]] && wait "$capture_pid" 2>/dev/null || true
-  [[ -n "$overlay_pid" ]] && wait "$overlay_pid" 2>/dev/null || true
+  wait_for_child_exit "$python_pid"
+  wait_for_child_exit "$capture_pid"
+  wait_for_child_exit "$overlay_pid"
   rm -f "$LOCK_DIR/pid"
   rmdir "$LOCK_DIR" 2>/dev/null || true
 }
@@ -121,4 +138,38 @@ env \
   EDAP_TORCH_THREADS="${EDAP_TORCH_THREADS:-6}" \
   OMP_NUM_THREADS="${OMP_NUM_THREADS:-4}" \
   PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=True \
-  "$PYTHON_BIN" "$EDAP_DIR/EDAPGui.py" >>"$LOG_FILE" 2>&1
+  "$PYTHON_BIN" "$EDAP_DIR/EDAPGui.py" >>"$LOG_FILE" 2>&1 &
+python_pid=$!
+
+# Supervise the owned process tree. This is lifecycle supervision, not a CPU
+# watchdog: if capture loses its source or Python exits, the remaining children
+# are stopped immediately instead of lingering with stale state.
+while kill -0 "$python_pid" >/dev/null 2>&1; do
+  if ! kill -0 "$capture_pid" >/dev/null 2>&1; then
+    set +e
+    wait "$capture_pid"
+    capture_status=$?
+    set -e
+    capture_pid=""
+    capture_error=$(tail -n 1 "$LOG_FILE" 2>/dev/null || true)
+    if [[ "$capture_status" -eq 78 ]]; then
+      print -r -- "$capture_error" >>"$LOG_FILE"
+    else
+      [[ -z "$capture_error" ]] && capture_error="Native Elite capture stopped unexpectedly. See $LOG_FILE"
+      show_launch_failure "$capture_error"
+    fi
+    kill "$python_pid" >/dev/null 2>&1 || true
+    wait "$python_pid" 2>/dev/null || true
+    python_pid=""
+    [[ "$capture_status" -eq 78 ]] && exit 0
+    exit "$capture_status"
+  fi
+  sleep 0.25
+done
+
+set +e
+wait "$python_pid"
+python_status=$?
+set -e
+python_pid=""
+exit "$python_status"

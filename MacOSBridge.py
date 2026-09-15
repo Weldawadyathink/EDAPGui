@@ -20,7 +20,9 @@ class MacOSBridge:
         default = Path(__file__).parent / "platform/macos/macos_input_bridge"
         self.helper = Path(os.environ.get("EDAP_MACOS_INPUT_HELPER", default))
         self._process = None
-        self._lock = threading.Lock()
+        # close() can be reached while request() is handling a broken helper.
+        # An RLock keeps that recovery path serialized without deadlocking it.
+        self._lock = threading.RLock()
         self.timeout = float(os.environ.get("EDAP_MACOS_BRIDGE_TIMEOUT", "2.0"))
 
     def _start(self):
@@ -39,8 +41,11 @@ class MacOSBridge:
             bufsize=1,
         )
 
-    def request(self, op, **values):
+    def request(self, op, *, start_helper=True, **values):
         with self._lock:
+            if not start_helper and (
+                    self._process is None or self._process.poll() is not None):
+                return None
             self._start()
             request = {"op": op, **values}
             try:
@@ -81,17 +86,28 @@ class MacOSBridge:
     def permission_status(self):
         return self.request("permissions")
 
+    def release_all(self):
+        """Release input owned by an existing helper without starting one."""
+        return self.request("releaseAll", start_helper=False)
+
     def close(self):
-        process, self._process = self._process, None
-        if process is None:
-            return
-        try:
-            if process.poll() is None:
-                process.stdin.write('{"op":"quit"}\n')
-                process.stdin.flush()
-                process.wait(timeout=1)
-        except (OSError, subprocess.TimeoutExpired):
-            process.terminate()
+        with self._lock:
+            process, self._process = self._process, None
+            if process is None:
+                return
+            try:
+                if process.poll() is None:
+                    process.stdin.write('{"op":"quit"}\n')
+                    process.stdin.flush()
+                    process.wait(timeout=1)
+            except (BrokenPipeError, OSError, subprocess.TimeoutExpired):
+                if process.poll() is None:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=0.5)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait(timeout=0.5)
 
 
 bridge = MacOSBridge()

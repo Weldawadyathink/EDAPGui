@@ -62,6 +62,7 @@ private let macKeyCode: [Int: CGKeyCode] = [
 ]
 
 private var heldFlags: CGEventFlags = []
+private var heldKeyCodes: [Int: CGKeyCode] = [:]
 private let modifierFlags: [Int: CGEventFlags] = [
     29: .maskControl, 157: .maskControl, 42: .maskShift, 54: .maskShift,
     56: .maskAlternate, 184: .maskAlternate
@@ -75,6 +76,28 @@ private func reply(_ object: [String: Any]) {
 
 private func error(_ message: String) { reply(["ok": false, "error": message]) }
 
+@discardableResult
+private func releaseAllHeldKeys() -> Bool {
+    let keys = Set(heldKeyCodes.values)
+    heldKeyCodes.removeAll()
+    heldFlags = []
+
+    // Cleanup must remain quick when Elite has already closed. Clear our
+    // bookkeeping regardless, and post key-up events only when its window and
+    // existing event permission are immediately available.
+    guard !keys.isEmpty,
+          let window = eliteWindow(waitingUpTo: 0),
+          CGPreflightPostEventAccess() else { return false }
+    for keyCode in keys {
+        guard let event = CGEvent(
+                keyboardEventSource: nil, virtualKey: keyCode, keyDown: false) else { continue }
+        event.flags = []
+        event.setIntegerValueField(.keyboardEventKeyboardType, value: 41)
+        event.postToPid(window.pid)
+    }
+    return true
+}
+
 while let line = readLine() {
     guard let data = line.data(using: .utf8),
           let request = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -84,12 +107,18 @@ while let line = readLine() {
     }
 
     if op == "quit" {
+        releaseAllHeldKeys()
         reply(["ok": true])
         break
     }
     if op == "permissions" {
         reply(["ok": true, "postEvents": CGPreflightPostEventAccess(),
                "accessibility": AXIsProcessTrusted()])
+        continue
+    }
+    if op == "releaseAll" {
+        let posted = releaseAllHeldKeys()
+        reply(["ok": true, "posted": posted])
         continue
     }
     if op == "key" {
@@ -99,11 +128,9 @@ while let line = readLine() {
             error("Unsupported DirectInput scan code \(request["scanCode"] ?? "nil")")
             continue
         }
-        // Track modifier releases even if Elite disappeared between key-down
-        // and shutdown. That prevents a stale modifier from contaminating the
-        // next event if the window returns while this helper is still alive.
+        var eventFlags = heldFlags
         if let flag = modifierFlags[scanCode] {
-            if down { heldFlags.insert(flag) } else { heldFlags.remove(flag) }
+            if down { eventFlags.insert(flag) } else { eventFlags.remove(flag) }
         }
         guard let window = eliteWindow() else {
             error("Could not find visible Elite window named '\(wantedTitle)'")
@@ -117,9 +144,15 @@ while let line = readLine() {
             error("Could not create keyboard event")
             continue
         }
-        event.flags = heldFlags
+        event.flags = eventFlags
         event.setIntegerValueField(.keyboardEventKeyboardType, value: 41)
         event.postToPid(window.pid)
+        heldFlags = eventFlags
+        if down {
+            heldKeyCodes[scanCode] = keyCode
+        } else {
+            heldKeyCodes.removeValue(forKey: scanCode)
+        }
         reply(["ok": true, "pid": window.pid, "keyCode": keyCode])
         continue
     }

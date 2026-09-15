@@ -356,7 +356,8 @@ class EDKeys:
             self._raise_if_stop_requested()
             # Focus Elite window if configured.
             if self.activate_window:
-                set_focus_elite_window()
+                if not set_focus_elite_window():
+                    raise RuntimeError("Elite window is not currently available for input")
                 self._interruptible_sleep(0.05)
 
             try:
@@ -388,6 +389,13 @@ class EDKeys:
                 for mod in key['mods']:
                     ReleaseKey(mod)
                 raise
+            except Exception:
+                # A window handoff or helper failure can also happen midway
+                # through a chord. Always attempt key-up before propagating it.
+                ReleaseKey(key['key'])
+                for mod in key['mods']:
+                    ReleaseKey(mod)
+                raise
 
             if repeat_delay:
                 self._interruptible_sleep(repeat_delay)
@@ -397,6 +405,12 @@ class EDKeys:
     def release_all_keys(self):
         """Release all modifier keys and any currently tracked key presses to prevent stuck keys.
         Called on stop/interrupt to ensure no keys remain held down."""
+        # The native helper knows exactly which keys it posted. Releasing them
+        # in one request avoids repeated window searches during stop/quit, and
+        # deliberately does not start a new helper merely to shut it down.
+        if ReleaseAllKeys():
+            return
+
         modifier_scancodes = [
             SCANCODE.get("Key_LeftShift"),
             SCANCODE.get("Key_RightShift"),

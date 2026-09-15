@@ -120,6 +120,7 @@ class APGui:
         self._main_thread_id = threading.get_ident()
         self._ui_queue = queue.Queue()
         self._background_tasks = {}
+        self._pending_background_tasks = {}
         self._closing = False
         root.title("EDAutopilot " + EDAP_VERSION)
         # root.overrideredirect(True)
@@ -322,7 +323,15 @@ class APGui:
             self.msgList.yview(tk.END)
             return
         if msg == '_task_finished':
-            self._background_tasks.pop(body, None)
+            name, finished_task = body
+            if self._background_tasks.get(name) is finished_task:
+                self._background_tasks.pop(name, None)
+                pending = self._pending_background_tasks.pop(name, None)
+                if pending is not None and not self._closing:
+                    target, announce, coalesce, clear_stop = pending
+                    self._start_background_task(
+                        name, target, announce=announce, coalesce=coalesce,
+                        clear_stop=clear_stop)
             return
 
         if msg == 'log':
@@ -448,12 +457,22 @@ class APGui:
             return
         self.root.after(50, self._drain_ui_queue)
 
-    def _start_background_task(self, name, target, announce=True):
+    def _start_background_task(
+            self, name, target, announce=True, coalesce=False, clear_stop=False):
         """Run a blocking GUI command once, reporting failures in the UI log."""
         existing = self._background_tasks.get(name)
         if existing is not None and existing.is_alive():
+            if coalesce:
+                self._pending_background_tasks[name] = (
+                    target, announce, coalesce, clear_stop)
+                self.log_msg(f"{name.title()} request queued")
+                return True
             self.log_msg(f"{name.title()} is already running")
             return False
+        # A worker can finish just before Tk drains its completion callback.
+        # Starting a newer explicit command supersedes any request that was
+        # queued behind that now-finished worker.
+        self._pending_background_tasks.pop(name, None)
 
         def runner():
             try:
@@ -466,8 +485,13 @@ class APGui:
                 self.ed_ap.keys.release_all_keys()
                 self.log_msg(f"{name.title()} failed: {exc}")
             finally:
-                self._ui_queue.put(('_task_finished', name))
+                self._ui_queue.put(('_task_finished', (name, threading.current_thread())))
 
+        # End intentionally leaves the cooperative stop flag set until running
+        # work observes it. A later, explicit user action begins a new command
+        # generation and may safely clear that old request here.
+        if clear_stop:
+            self.ed_ap.stop_event.clear()
         if announce:
             self.log_msg(f"{name.title()} started")
         task = threading.Thread(target=runner, name=f"EDAP-{name}", daemon=True)
@@ -496,6 +520,7 @@ class APGui:
             self._start_background_task(
                 'target calibration',
                 lambda: self.ed_ap.calibrate_target(ask_confirmation=False),
+                clear_stop=True,
             )
 
     def quit(self):
@@ -516,6 +541,9 @@ class APGui:
     def stop_all_assists(self):
         logger.debug("Entered: stop_all_assists")
         self.log_msg("Stop requested")
+        # Coalesced button commands represent user intent, but an explicit End
+        # must take precedence over anything that has not started yet.
+        self._pending_background_tasks.clear()
         self.ed_ap.request_stop_all()
         self.callback('stop_all_assists')
 
@@ -790,10 +818,10 @@ class APGui:
         Aligns to the target for tuning.
         @return: N/A
         """
-        self.ed_ap.stop_event.clear()
         self._start_background_task(
             'align to target',
             lambda: self.ed_ap.compass_align(self.ed_ap.scrReg),
+            clear_stop=True,
         )
 
     def save_settings(self):
@@ -1195,15 +1223,18 @@ class APGui:
 
         btn_speed_0 = ttk.Button(
             blk_ship, text='0% Throttle', command=lambda: self._start_background_task(
-                'set throttle', self.ship_throttle_0, announce=False))
+                'set throttle', self.ship_throttle_0, announce=False, coalesce=True,
+                clear_stop=True))
         btn_speed_0.grid(row=4, column=0, padx=2, pady=12, columnspan=1, sticky="NSEW")
         btn_speed_50 = ttk.Button(
             blk_ship, text='50% Throttle', command=lambda: self._start_background_task(
-                'set throttle', self.ship_throttle_50, announce=False))
+                'set throttle', self.ship_throttle_50, announce=False, coalesce=True,
+                clear_stop=True))
         btn_speed_50.grid(row=4, column=1, padx=2, pady=12, columnspan=1, sticky="NSEW")
         btn_speed_100 = ttk.Button(
             blk_ship, text='100% Throttle', command=lambda: self._start_background_task(
-                'set throttle', self.ship_throttle_100, announce=False))
+                'set throttle', self.ship_throttle_100, announce=False, coalesce=True,
+                clear_stop=True))
         btn_speed_100.grid(row=5, column=0, padx=2, pady=2, columnspan=1, sticky="NSEW")
 
         btn_align_target = ttk.Button(blk_ship, text='Align to Target', command=self.tuning_align_target)

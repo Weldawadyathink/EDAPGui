@@ -46,24 +46,27 @@ def set_focus_elite_window():
     if sys.platform == "darwin":
         try:
             macos_bridge.focus_elite()
+            return True
         except MacOSBridgeError as exc:
             logger.warning(f"set_focus_elite_window: {exc}")
-        return
+            return False
 
     ed_title = "Elite - Dangerous (CLIENT)"
 
     # TODO - determine if GetWindowText is faster than FindWindow if ED is in foreground
     if win32gui.GetWindowText(win32gui.GetForegroundWindow()) == ed_title:
-        return
+        return True
 
     handle = win32gui.FindWindow(0, ed_title)
     if handle != 0:
         try:
             win32gui.ShowWindow(handle, win32con.SW_NORMAL)  # give focus to ED
             win32gui.SetForegroundWindow(handle)  # give focus to ED
+            return True
         except:
             print("set_focus_elite_window ERROR")
             pass
+    return False
 
 
 def crop_image_by_pct(image, quad: Quad):

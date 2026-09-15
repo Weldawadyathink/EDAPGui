@@ -121,6 +121,12 @@ private func fail(_ message: String, code: Int32 = 1) -> Never {
     exit(code)
 }
 
+private final class CaptureDelegate: NSObject, SCStreamDelegate {
+    func stream(_ stream: SCStream, didStopWithError error: Error) {
+        fail("screen capture stopped: \(error.localizedDescription)", code: 79)
+    }
+}
+
 guard let arguments = Arguments() else {
     fail("usage: macos_capture_bridge --output PATH --width N --height N --fps N [--window-title TITLE]", code: 2)
 }
@@ -169,6 +175,8 @@ configuration.showsCursor = false
 configuration.capturesAudio = false
 
 let filter: SCContentFilter
+var eliteProcessMonitor: DispatchSourceProcess?
+var eliteWindowMonitor: DispatchSourceTimer?
 if let wantedTitle = arguments.windowTitle {
     let needle = wantedTitle.lowercased()
     guard let window = availableContent?.windows.first(where: {
@@ -194,6 +202,39 @@ if let wantedTitle = arguments.windowTitle {
     // replacement; sourceRect limits the output to Elite's current frame.
     filter = SCContentFilter(
         display: windowDisplay, including: [application], exceptingWindows: [])
+    let processMonitor = DispatchSource.makeProcessSource(
+        identifier: application.processID, eventMask: .exit, queue: .main)
+    processMonitor.setEventHandler {
+        fail("Elite process exited; stopping EDAPGui.", code: 78)
+    }
+    processMonitor.resume()
+    eliteProcessMonitor = processMonitor
+
+    // Wine can outlive Elite, in which case process monitoring alone would
+    // leave EDAP consuming blank frames. Allow brief window replacement, then
+    // terminate the owned runtime when Elite is genuinely gone.
+    var missedWindowChecks = 0
+    let windowMonitor = DispatchSource.makeTimerSource(queue: .main)
+    windowMonitor.schedule(deadline: .now() + 1, repeating: 0.5)
+    windowMonitor.setEventHandler {
+        // Use all windows here so switching Spaces or minimizing Elite does not
+        // look like an application exit. The capture path itself still only
+        // starts from a visible, shareable Elite window.
+        let windows = CGWindowListCopyWindowInfo(
+            [.optionAll, .excludeDesktopElements], kCGNullWindowID)
+            as? [[String: Any]] ?? []
+        let found = windows.contains { item in
+            let title = item[kCGWindowName as String] as? String ?? ""
+            let pid = (item[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value
+            return pid == application.processID && title.lowercased().contains(needle)
+        }
+        missedWindowChecks = found ? 0 : missedWindowChecks + 1
+        if missedWindowChecks >= 4 {
+            fail("Elite window closed; stopping EDAPGui.", code: 78)
+        }
+    }
+    windowMonitor.resume()
+    eliteWindowMonitor = windowMonitor
 } else {
     let excludedApplications: [SCRunningApplication]
     if let excludedPID = arguments.excludedPID,
@@ -205,7 +246,8 @@ if let wantedTitle = arguments.windowTitle {
     filter = SCContentFilter(
         display: display, excludingApplications: excludedApplications, exceptingWindows: [])
 }
-let stream = SCStream(filter: filter, configuration: configuration, delegate: nil)
+private let streamDelegate = CaptureDelegate()
+let stream = SCStream(filter: filter, configuration: configuration, delegate: streamDelegate)
 let captureQueue = DispatchQueue(label: "com.moltenvr.edap.capture", qos: .userInteractive)
 do {
     try stream.addStreamOutput(writer, type: .screen, sampleHandlerQueue: captureQueue)
