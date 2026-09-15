@@ -43,9 +43,9 @@ from EDAPColonizeEditor import ColonizeEditorTab
 # from EDJournal import *
 from ED_AP import *
 from EDAPWaypointEditor import WaypointEditorTab
+from ShipCalibrationTab import ShipCalibrationTab
 
 from EDlogger import logger
-from RPYLineEditor import line_editor
 
 """
 File:EDAPGui.py
@@ -186,9 +186,6 @@ class APGui:
         self.lab_ck = {}
         self.single_waypoint_system = tk.StringVar()
         self.single_waypoint_station = tk.StringVar()
-        self.throttle_var = tk.StringVar()
-        self.throttle_combo = None
-        self.throttle_keys = []
         self._global_shopping_list_tab = None
         self.waypoint_editor_tab = None
         self.colonize_tab = None
@@ -325,6 +322,20 @@ class APGui:
             epoch, body = body
             if epoch != getattr(self, '_command_epoch', 0):
                 return
+        if msg == 'ship_calibration_progress':
+            if hasattr(self, 'ship_calibration_tab'):
+                if body:
+                    self.ship_calibration_tab.message.set(str(body))
+                    self.log_msg(f'Ship calibration: {body}')
+                self.ship_calibration_tab.refresh()
+                self.ship_profile_label.set(self.ship_calibration_tab.current.get())
+            return
+        if msg == 'ship_calibration_changed':
+            self.update_ship_cfg()
+            return
+        if msg.endswith('_start') and self.ed_ap.calibration_busy.is_set():
+            self.log_msg('Finish or stop ship calibration before starting an assist.')
+            return
         if msg == '_render_log':
             self.msgList.insert(tk.END, body)
             self.msgList.yview(tk.END)
@@ -469,6 +480,10 @@ class APGui:
         """Run a blocking GUI command once, reporting failures in the UI log."""
         if self._closing:
             return False
+        busy = getattr(getattr(self, 'ed_ap', None), 'calibration_busy', None)
+        if name != 'ship calibration' and busy is not None and busy.is_set() is True:
+            self.log_msg('Finish or stop ship calibration before starting another command.')
+            return False
         existing = self._background_tasks.get(name)
         if existing is not None and existing.is_alive():
             if coalesce:
@@ -488,11 +503,19 @@ class APGui:
                 target()
             except InterruptedError:
                 self.ed_ap.keys.release_all_keys()
-                self.log_msg(f"{name.title()} stopped")
+                message = f"{name.title()} stopped"
+                if name in ('ship calibration', 'calibration reference check'):
+                    self.callback('ship_calibration_progress', message)
+                else:
+                    self.log_msg(message)
             except Exception as exc:
                 logger.exception(f"{name.title()} failed")
                 self.ed_ap.keys.release_all_keys()
-                self.log_msg(f"{name.title()} failed: {exc}")
+                message = f"{name.title()} failed: {exc}"
+                if name in ('ship calibration', 'calibration reference check'):
+                    self.callback('ship_calibration_progress', message)
+                else:
+                    self.log_msg(message)
             finally:
                 self._ui_queue.put(('_task_finished', (name, threading.current_thread())))
 
@@ -512,17 +535,11 @@ class APGui:
         return True
 
     def update_ship_cfg(self):
-        """
-        Load up the display with what we read from ED_AP for the current ship.
-        Triggered when the ship is changed.
-        @return:
-        """
         self.entries['ship']['SunPitchUp+Time'].delete(0, tk.END)
         self.entries['ship']['SunPitchUp+Time'].insert(0, self.ed_ap.sunpitchuptime)
-
-        if self.ed_ap.current_ship_cfg:
-            self.throttle_keys = [key for key, value in self.ed_ap.current_ship_cfg.items() if 'Speed' in key]
-            self.throttle_combo['values'] = self.throttle_keys
+        if hasattr(self, 'ship_calibration_tab'):
+            self.ship_calibration_tab.refresh()
+            self.ship_profile_label.set(self.ship_calibration_tab.current.get())
 
     def calibrate_callback(self):
         msg = ('Select OK to begin Calibration. You must be in space and have '
@@ -725,10 +742,6 @@ class APGui:
         else:
             self.log_msg("You have the latest version of EDAP!")
 
-    def on_throttle_select(self, event):
-        # The actual logi cis done on the edit curve buttons.
-        pass
-
     def open_changelog(self):
         webbrowser.open_new(f"{EDAP_REPOSITORY}/blob/{EDAP_DOC_BRANCH}/ChangeLog.md")
 
@@ -775,57 +788,6 @@ class APGui:
     def ship_throttle_100(self):
         self.ed_ap.set_throttle_100()
 
-    def edit_roll_curve(self):
-        # Get current ship roll curve
-        if self.ed_ap.current_ship_cfg:
-            # Get the selected speed from the combobox
-            selected_throttle = self.throttle_var.get()  # i.e. SCSpeed50 etc.
-            if selected_throttle in self.ed_ap.current_ship_cfg:
-                spd_dmd_dict = self.ed_ap.current_ship_cfg[selected_throttle]
-                if 'RollRate' in spd_dmd_dict:
-                    curve = spd_dmd_dict['RollRate']
-                    # Edit the curve
-                    new_curve = line_editor(curve, f"{selected_throttle} - Roll curve")
-                    if new_curve is not None:
-                        if messagebox.askyesno("RPY curve", "Keep the changes made to curve? If Yes, remember to save."):
-                            spd_dmd_dict['RollRate'] = new_curve
-            else:
-                messagebox.showinfo("EDAP", "Select a Throttle setting in the dropdown above.")
-
-    def edit_pit_curve(self):
-        # Get current ship pitch curve
-        if self.ed_ap.current_ship_cfg:
-            # Get the selected speed from the combobox
-            selected_throttle = self.throttle_var.get()  # i.e. SCSpeed50 etc.
-            if selected_throttle in self.ed_ap.current_ship_cfg:
-                spd_dmd_dict = self.ed_ap.current_ship_cfg[selected_throttle]
-                if 'PitchRate' in spd_dmd_dict:
-                    curve = spd_dmd_dict['PitchRate']
-                    # Edit the curve
-                    new_curve = line_editor(curve, f"{selected_throttle} - Pitch curve")
-                    if new_curve is not None:
-                        if messagebox.askyesno("RPY curve", "Keep the changes made to curve? If Yes, remember to save."):
-                            spd_dmd_dict['PitchRate'] = new_curve
-            else:
-                messagebox.showinfo("EDAP", "Select a Throttle setting in the dropdown above.")
-
-    def edit_yaw_curve(self):
-        # Get current ship yaw curve
-        if self.ed_ap.current_ship_cfg:
-            # Get the selected speed from the combobox
-            selected_throttle = self.throttle_var.get()  # i.e. SCSpeed50 etc.
-            if selected_throttle in self.ed_ap.current_ship_cfg:
-                spd_dmd_dict = self.ed_ap.current_ship_cfg[selected_throttle]
-                if 'YawRate' in spd_dmd_dict:
-                    curve = spd_dmd_dict['YawRate']
-                    # Edit the curve
-                    new_curve = line_editor(curve, f"{selected_throttle} - Pitch curve")
-                    if new_curve is not None:
-                        if messagebox.askyesno("RPY curve", "Keep the changes made to curve? If Yes, remember to save."):
-                            spd_dmd_dict['YawRate'] = new_curve
-            else:
-                messagebox.showinfo("EDAP", "Select a Throttle setting in the dropdown above.")
-
     def tuning_align_target(self):
         """
         Aligns to the target for tuning.
@@ -858,7 +820,9 @@ class APGui:
             webbrowser.open_new(f"{docs_url}/Settings.md")
         elif tab_text == "Debug/Test":
             webbrowser.open_new(f"{docs_url}/DebugTest.md")
-        elif tab_text == "Calibration":
+        elif tab_text == "Ship calibration":
+            webbrowser.open_new(f"{docs_url}/ShipCalibration.md")
+        elif tab_text == "Vision calibration":
             webbrowser.open_new(f"{docs_url}/Calibration.md")
         elif tab_text == "Waypoints":
             webbrowser.open_new(f"{docs_url}/WaypointEditor.md")
@@ -905,7 +869,6 @@ class APGui:
             self.ed_ap.config['Key_ModDelay'] = float(self.entries['keys']['Modifier Key Delay'].get())
             self.ed_ap.config['Key_DefHoldTime'] = float(self.entries['keys']['Default Hold Time'].get())
             self.ed_ap.config['Key_RepeatDelay'] = float(self.entries['keys']['Repeat Key Delay'].get())
-            self.ed_ap.config['AutoTuneRPYRates'] = self.checkboxvar['Enable Auto-tune RPY'].get()
 
             # Process config[] settings to update classes as necessary
             self.ed_ap.process_config_settings()
@@ -913,6 +876,12 @@ class APGui:
             messagebox.showinfo("Exception", "Invalid float entered")
 
     def check_cb(self, field):
+        assist_fields = ('FSD Route Assist', 'Supercruise Assist', 'Waypoint Assist',
+                         'Robigo Assist', 'AFK Combat Assist', 'DSS Assist', 'Single Waypoint Assist')
+        if field in assist_fields and self.ed_ap.calibration_busy.is_set():
+            self.checkboxvar[field].set(0)
+            self.log_msg('Finish or stop ship calibration before starting an assist.')
+            return
         """ Check checkbox
             ckbox.state:(ACTIVE | DISABLED)
             ('FSD Route Assist', 'Supercruise Assist', 'Enable Voice', 'Enable CV View')
@@ -1096,9 +1065,6 @@ class APGui:
         if field == 'Debug Images':
             self.ed_ap.debug_images = self.checkboxvar['Debug Images'].get()
 
-        if field == 'Enable Auto-tune RPY':
-            self.ed_ap.config['AutoTuneRPYRates'] = self.checkboxvar['Enable Auto-tune RPY'].get()
-
     def makeform(self, win: ttk.LabelFrame, f_type: int, fields, r: int = 0, inc: float = 1, r_from: float = 0,
                  rto: float = 1000):
         entries = {}
@@ -1166,10 +1132,14 @@ class APGui:
         page2.grid_columnconfigure([0, 1], weight=1)
         self._nb.add(page2, text="Debug/Test")  # debug/test page
 
-        # === Calibration Tab ===
+        page_ship_calibration = ttk.Frame(self._nb)
+        self._nb.add(page_ship_calibration, text='Ship calibration')
+        self.ship_calibration_tab = ShipCalibrationTab(page_ship_calibration, self)
+
+        # === Vision Calibration Tab ===
         page_calibration = ttk.Frame(self._nb)
         page_calibration.grid_columnconfigure(0, weight=1)
-        self._nb.add(page_calibration, text="Calibration")
+        self._nb.add(page_calibration, text="Vision calibration")
         # self.create_calibration_tab(page_calibration)
         self.calibration = Calibration(self.ed_ap, self.callback)
         self.calibration.create_calibration_tab(page_calibration)
@@ -1219,20 +1189,12 @@ class APGui:
         self.entries['ship'] = {}
         self.entries['ship']['SunPitchUp+Time'] = spn_sun_pitch_up
 
-        lbl_calibrate_note = ttk.Label(blk_ship, text="Ship RPY Tuning:\n1. Enable Auto-tune.\n"
-                                                      "2. Fly until until response is correct.\n"
-                                                      "3. Use Align to Target button to fine tune.\n"
-                                                      "4a. Use Throttle dropdown to select and...\n"
-                                                      "4b. Edit Curve if necessary and save changes.\n"
-                                                      "5. Disable Auto-tune.")
-        lbl_calibrate_note.grid(row=2, columnspan=2, pady=5, sticky=tk.W)
-
-        self.checkboxvar['Enable Auto-tune RPY'] = tk.BooleanVar()
-        self.checkboxvar['Enable Auto-tune RPY'].set(bool(self.ed_ap.config['AutoTuneRPYRates']))
-        cb_auto_tune_rpy = ttk.Checkbutton(blk_ship, text='Enable Auto-tune RPY',
-                                           variable=self.checkboxvar['Enable Auto-tune RPY'],
-                                           command=(lambda field='Enable Auto-tune RPY': self.check_cb(field)))
-        cb_auto_tune_rpy.grid(row=3, column=0, padx=2, pady=2, sticky=tk.W)
+        self.ship_profile_label = tk.StringVar(value=self.ship_calibration_tab.current.get())
+        ttk.Label(blk_ship, textvariable=self.ship_profile_label, wraplength=320).grid(
+            row=2, column=0, columnspan=2, sticky='w', pady=6)
+        ttk.Button(blk_ship, text='Open ship calibration',
+                   command=lambda: self._nb.select(page_ship_calibration)).grid(
+            row=3, column=0, columnspan=2, sticky='ew')
 
         btn_speed_0 = ttk.Button(
             blk_ship, text='0% Throttle', command=lambda: self._start_background_task(
@@ -1252,32 +1214,6 @@ class APGui:
 
         btn_align_target = ttk.Button(blk_ship, text='Align to Target', command=self.tuning_align_target)
         btn_align_target.grid(row=6, column=0, padx=2, pady=2, columnspan=2, sticky="NSEW")
-
-        ttk.Label(blk_ship, text="Throttle:").grid(row=7, column=0, padx=5, pady=5, sticky=tk.W)
-
-        self.throttle_var = tk.StringVar()
-        self.throttle_combo = ttk.Combobox(blk_ship, textvariable=self.throttle_var, values=self.throttle_keys)
-        self.throttle_combo.grid(row=7, column=1, padx=5, pady=5, sticky="EW")
-        self.throttle_combo.bind("<<ComboboxSelected>>", self.on_throttle_select)
-
-
-        # btn_tst_roll = ttk.Button(blk_ship, text='4. Gather Roll Rates', command=self.ship_tst_roll)
-        # btn_tst_roll.grid(row=10, column=0, padx=2, pady=2, columnspan=1, sticky="NSEW")
-        btn_roll_edit = ttk.Button(blk_ship, text='Edit Roll Curve', command=self.edit_roll_curve)
-        btn_roll_edit.grid(row=10, column=0, padx=2, pady=2, columnspan=2, sticky="NSEW")
-
-        # lbl_calibrate_note2 = ttk.Label(blk_ship, text="Tune Pitch & Yaw:\n1. Set speed above.\n"
-        #                                                "2. Target remote System.\n"
-        #                                                "3. Maneuver target to center of screen (and compass).")
-        # lbl_calibrate_note2.grid(row=11, columnspan=2, pady=5, sticky=tk.W)
-        # btn_tst_pitch = ttk.Button(blk_ship, text='4. Gather Pitch Rates', command=self.ship_tst_pitch)
-        # btn_tst_pitch.grid(row=12, column=0, padx=2, pady=2, columnspan=1, sticky="NSEW")
-        btn_pit_edit = ttk.Button(blk_ship, text='Edit Pitch Curve', command=self.edit_pit_curve)
-        btn_pit_edit.grid(row=12, column=0, padx=2, pady=2, columnspan=2, sticky="NSEW")
-        # btn_tst_yaw = ttk.Button(blk_ship, text='6. Gather Yaw Rates', command=self.ship_tst_yaw)
-        # btn_tst_yaw.grid(row=13, column=0, padx=5, pady=2, columnspan=1, sticky="NSEW")
-        btn_yaw_edit = ttk.Button(blk_ship, text='Edit Yaw Curve', command=self.edit_yaw_curve)
-        btn_yaw_edit.grid(row=13, column=0, padx=2, pady=2, columnspan=2, sticky="NSEW")
 
         # log window
         log = ttk.LabelFrame(page0, text="LOG", padding=(10, 5))

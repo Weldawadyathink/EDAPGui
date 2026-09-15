@@ -52,6 +52,11 @@ def operating_conditions(ap, require_experiment=False):
             raise CalibrationError('Calibration requires clear space: undocked, away from surfaces, danger and scooping')
         if not state.get('target'):
             raise CalibrationError('Select a distant system as a fixed compass reference')
+        destination = status.get('Destination_Name')
+        if destination and destination.casefold() != state['target'].casefold():
+            # FSDTarget can remain in the journal after the pilot selects a
+            # local body. That retained route target is not the compass target.
+            raise CalibrationError('The current destination is not the selected distant system')
         if any(getattr(ap, name, False) for name in ASSISTS):
             raise CalibrationError('Stop all flight assists before calibrating')
     reference = (state.get('target'), status.get('Destination_System'),

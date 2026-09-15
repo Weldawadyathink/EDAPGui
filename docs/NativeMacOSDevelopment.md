@@ -99,6 +99,26 @@ Long assist waits use `stop_event.wait(...)` or explicit stop checks rather than
 uninterruptible sleeps. Keep new control loops cooperative and avoid adding
 unbounded work to Tk callbacks.
 
+### Ship response calibration
+
+Ship steering uses hull-scoped profiles in `configs/ship_calibration.json`.
+Profiles begin without a response curve. Supervised background experiments send
+bounded key pulses, measure settled angular displacement from the compass
+direction vector, retain raw trials, fit a monotone curve, and require separate
+validation pulses. The journal supplies hull, `ShipID` provenance, loadout
+fingerprint, and mass metadata; it does not supply attitude or angular rate.
+
+The active profile mapping is hull-only. `ShipID` must never be used as a
+selection key. A changed loadout or materially changed mass is an advisory
+warning, not an automatic profile switch or hard runtime block. Trials retain
+their loadout fingerprint and curves never combine different fingerprints.
+
+Calibration exclusively owns input while active, pauses the assist engine, and
+uses the same cooperative End signal and release path as other commands. All
+vision and pulse work stays off the Tk thread; progress is marshalled through
+the normal UI callback queue. See [ShipCalibration.md](ShipCalibration.md) for
+the user workflow and model boundaries.
+
 ### Overlay and machine learning
 
 `macos_overlay_bridge.m` is a transparent, click-through AppKit panel fed by

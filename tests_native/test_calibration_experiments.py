@@ -6,11 +6,14 @@ import tempfile
 import threading
 import unittest
 from unittest import mock
+from types import SimpleNamespace
 
 from ShipCalibration import CalibrationError, Conditions, ProfileStore, ShipIdentity
 from ShipCalibrationSession import CalibrationSession, Observation
 import EDKeys as keys_module
 from EDKeys import EDKeys
+from EDAP_data import FlagsInMainShip
+from ShipCalibrationRuntime import operating_conditions
 
 
 class Plant:
@@ -138,6 +141,15 @@ class ExperimentTests(unittest.TestCase):
         with self.assertRaisesRegex(CalibrationError, 'changed'):
             self.session(plant).run('pitch')
         self.assertEqual(len(plant.inputs), 1)
+
+    def test_old_route_target_cannot_disguise_current_local_destination(self):
+        ap = SimpleNamespace(
+            jn=SimpleNamespace(ship_state=lambda: {'type': 'python', 'target': 'Sol'}),
+            status=SimpleNamespace(get_cleaned_data=lambda: {
+                'Flags': FlagsInMainShip, 'GuiFocus': 0, 'pips': {'engine': 2},
+                'Destination_Name': 'Nearby Station'}), speed_demand='Speed50')
+        with self.assertRaisesRegex(CalibrationError, 'current destination'):
+            operating_conditions(ap, require_experiment=True)
 
     def test_failed_atomic_write_preserves_memory_and_disk(self):
         before = self.store.path.read_bytes()

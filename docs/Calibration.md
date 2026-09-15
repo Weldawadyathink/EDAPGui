@@ -1,7 +1,9 @@
-# EDAPGui Calibration
+# EDAPGui Vision Calibration
 This document explains how to perform calibration for the
 Elite Dangerous Autopilot (GUI) version. 
-Calibration is performed from the Calibration tab:
+Screen-region and OCR calibration is performed from the **Vision calibration**
+tab. Ship movement response is a separate process documented in
+[Ship response calibration](ShipCalibration.md).
 
 ![Calibration.png](../screen/Calibration.png)
 
