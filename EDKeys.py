@@ -26,8 +26,9 @@ Constraints:  This file will use the latest modified *.binds file
 @final
 class EDKeys:
 
-    def __init__(self, cb):
+    def __init__(self, cb, stop_event=None):
         self.ap_ckb = cb
+        self.stop_event = stop_event
         self.key_mod_delay = 0.01  # Delay for key modifiers to ensure modifier is detected before/after the key
         self.key_def_hold_time = 0.2  # Default hold time for a key press
         self.key_repeat_delay = 0.1  # Delay between key press repeats
@@ -107,34 +108,29 @@ class EDKeys:
                 logger.warning("\tget_bindings_<{}>= does not have a valid keyboard keybind.".format(key).upper())
                 self.missing_keys.append(key)
 
-        # Check if the hotkeys are used in ED
-        binding_name = self.check_hotkey_in_bindings('Key_End')
-        if binding_name != "":
-            warn_text = (f"Hotkey 'Key_End' is used in the ED keybindings for '{binding_name}'. Recommend changing in"
-                         f" ED to another key to avoid EDAP accidentally being triggered.")
-            self.ap_ckb('log', f"WARNING: {warn_text}")
-            logger.warning(f"{warn_text}")
+        # Check if the hotkeys are used in ED.
+        for key_name in ('Key_End', 'Key_Insert', 'Key_PageUp', 'Key_Home'):
+            binding_name = self.check_hotkey_in_bindings(key_name)
+            if binding_name:
+                warn_text = (
+                    f"Hotkey '{key_name}' is used in the ED keybindings for "
+                    f"'{binding_name}'. Recommend changing it in ED to avoid "
+                    "EDAP accidentally being triggered.")
+                self.ap_ckb('log', f"WARNING: {warn_text}")
+                logger.warning(warn_text)
 
-        binding_name = self.check_hotkey_in_bindings('Key_Insert')
-        if binding_name != "":
-            warn_text = (f"Hotkey 'Key_Insert' is used in the ED keybindings for '{binding_name}'. Recommend changing in"
-                         f" ED to another key to avoid EDAP accidentally being triggered.")
-            self.ap_ckb('log', f"WARNING: {warn_text}")
-            logger.warning(f"{warn_text}")
+    def _raise_if_stop_requested(self):
+        if self.stop_event is not None and self.stop_event.is_set():
+            raise InterruptedError("EDAP assist stop requested")
 
-        binding_name = self.check_hotkey_in_bindings('Key_PageUp')
-        if binding_name != "":
-            warn_text = (f"Hotkey 'Key_PageUp' is used in the ED keybindings for '{binding_name}'. Recommend changing in"
-                         f" ED to another key to avoid EDAP accidentally being triggered.")
-            self.ap_ckb('log', f"WARNING: {warn_text}")
-            logger.warning(f"{warn_text}")
-
-        binding_name = self.check_hotkey_in_bindings('Key_Home')
-        if binding_name != "":
-            warn_text = (f"Hotkey 'Key_Home' is used in the ED keybindings for '{binding_name}'. Recommend changing in"
-                         f" ED to another key to avoid EDAP accidentally being triggered.")
-            self.ap_ckb('log', f"WARNING: {warn_text}")
-            logger.warning(f"{warn_text}")
+    def _interruptible_sleep(self, delay):
+        if not delay or delay <= 0.0:
+            return
+        if self.stop_event is not None:
+            if self.stop_event.wait(delay):
+                raise InterruptedError("EDAP assist stop requested")
+        else:
+            sleep(delay)
 
     def get_bindings(self) -> dict[str, Any]:
         """Returns a dict struct with the direct input equivalent of the necessary elite keybindings"""
@@ -240,7 +236,7 @@ class EDKeys:
 
     # Note:  this routine will grab the *.binds file which is the latest modified
     def get_latest_keybinds(self):
-        path_bindings = environ['LOCALAPPDATA'] + "\Frontier Developments\Elite Dangerous\Options\Bindings"
+        path_bindings = environ['LOCALAPPDATA'] + r"\Frontier Developments\Elite Dangerous\Options\Bindings"
         try:
             list_of_bindings = [join(path_bindings, f) for f in listdir(path_bindings) if
                                 isfile(join(path_bindings, f)) and f.endswith('.binds')]
@@ -254,10 +250,11 @@ class EDKeys:
         return latest_bindings
 
     def send_key(self, type, key):
+        self._raise_if_stop_requested()
         # Focus Elite window if configured
         if self.activate_window:
             set_focus_elite_window()
-            sleep(0.05)
+            self._interruptible_sleep(0.05)
 
         if type == 'Up':
             ReleaseKey(key)
@@ -288,40 +285,46 @@ class EDKeys:
             repeat) + ',repeat_delay:' + str(repeat_delay) + ',state:' + str(state))
 
         for i in range(repeat):
+            self._raise_if_stop_requested()
             # Focus Elite window if configured.
             if self.activate_window:
                 set_focus_elite_window()
-                sleep(0.05)
+                self._interruptible_sleep(0.05)
 
-            if state is None or state == 1:
-                for mod in key['mods']:
-                    PressKey(mod)
-                    sleep(self.key_mod_delay)
+            try:
+                if state is None or state == 1:
+                    for mod in key['mods']:
+                        PressKey(mod)
+                        self._interruptible_sleep(self.key_mod_delay)
 
-                PressKey(key['key'])
+                    PressKey(key['key'])
 
-            if state is None:
-                if hold:
-                    if hold > 0.0:
-                        sleep(hold)
-                else:
-                    if self.key_def_hold_time > 0.0:
-                        sleep(self.key_def_hold_time)
+                if state is None:
+                    if hold:
+                        self._interruptible_sleep(hold)
+                    else:
+                        self._interruptible_sleep(self.key_def_hold_time)
 
-            if 'hold' in key:
-                sleep(0.1)
+                if 'hold' in key:
+                    self._interruptible_sleep(0.1)
 
-            if state is None or state == 0:
+                if state is None or state == 0:
+                    ReleaseKey(key['key'])
+
+                    for mod in key['mods']:
+                        self._interruptible_sleep(self.key_mod_delay)
+                        ReleaseKey(mod)
+            except InterruptedError:
+                # A stop can arrive in the middle of a held chord.
                 ReleaseKey(key['key'])
-
                 for mod in key['mods']:
-                    sleep(self.key_mod_delay)
                     ReleaseKey(mod)
+                raise
 
             if repeat_delay:
-                sleep(repeat_delay)
+                self._interruptible_sleep(repeat_delay)
             else:
-                sleep(self.key_repeat_delay)
+                self._interruptible_sleep(self.key_repeat_delay)
 
     def release_all_keys(self):
         """Release all modifier keys and any currently tracked key presses to prevent stuck keys.

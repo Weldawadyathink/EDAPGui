@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import threading
 import traceback
 from math import atan, degrees, tan, radians
 import random
@@ -115,6 +116,7 @@ class EDAutopilot:
         self.ship_tst_roll_enabled = False
         self.ship_tst_pitch_enabled = False
         self.ship_tst_yaw_enabled = False
+        self.stop_event = threading.Event()
 
         # Load AP.json config
         self.load_config()
@@ -124,7 +126,8 @@ class EDAutopilot:
 
         # config the voice interface
         self.vce = Voice()
-        self.vce.v_enabled = self.config['VoiceEnable']
+        if self.config['VoiceEnable']:
+            self.vce.set_on()
         self.vce.set_voice_id(self.config['VoiceID'])
         self.vce.say("Welcome to Autopilot")
 
@@ -168,7 +171,7 @@ class EDAutopilot:
         self.templ = Image_Templates.Image_Templates(self.scr.scaleX, self.scr.scaleY)
         self.scrReg = Screen_Regions.Screen_Regions(self.scr, self.templ)
         self.jn = EDJournal(cb)
-        self.keys = EDKeys(cb)
+        self.keys = EDKeys(cb, self.stop_event)
         self.afk_combat = AFK_Combat(self, self.keys, self.jn, self.vce)
         self.waypoint = EDWayPoint(self, cb, self.jn.ship_state()['odyssey'])
         self.robigo = Robigo(self)
@@ -244,7 +247,8 @@ class EDAutopilot:
         # start the engine thread
         self.terminate = False  # terminate used by the thread to exit its loop
         if do_thread:
-            self.ap_thread = kthread.KThread(target=self.engine_loop, name="EDAutopilot")
+            self.ap_thread = threading.Thread(
+                target=self.engine_loop, name="EDAutopilot", daemon=True)
             self.ap_thread.start()
 
         # Start thread to delete old log files.
@@ -673,6 +677,7 @@ class EDAutopilot:
         max_pick = 0
         i = range_low
         while i <= range_high:
+            self.raise_if_stop_requested()
             scale_x = float(i / 100)
             scale_y = scale_x
 
@@ -713,13 +718,13 @@ class EDAutopilot:
 
         return scale, max_pick
 
-    def calibrate_target(self):
+    def calibrate_target(self, ask_confirmation=True):
         """ Routine to find the optimal scaling values for the template images. """
-        msg = 'Select OK to begin Calibration. You must be in space and have a star system targeted in center screen.'
-        self.vce.say(msg)
-        ans = messagebox.askokcancel('Calibration', msg)
-        if not ans:
-            return
+        if ask_confirmation:
+            msg = 'Select OK to begin Calibration. You must be in space and have a star system targeted in center screen.'
+            self.vce.say(msg)
+            if not messagebox.askokcancel('Calibration', msg):
+                return
 
         self.ap_ckb('log+vce', 'Calibration starting.')
 
@@ -732,13 +737,12 @@ class EDAutopilot:
         self.overlay.overlay_floating_text('calib_target', key, targ_region['rect'][0], targ_region['rect'][1], (0, 0, 255), -1)
         self.overlay.overlay_paint()
 
-        # Calibrate system target
-        self.calibrate_target_worker()
-
-        # Clean up
-        self.overlay.overlay_remove_rect('calib_target')
-        self.overlay.overlay_remove_floating_text('calib_target')
-        self.overlay.overlay_paint()
+        try:
+            self.calibrate_target_worker()
+        finally:
+            self.overlay.overlay_remove_rect('calib_target')
+            self.overlay.overlay_remove_floating_text('calib_target')
+            self.overlay.overlay_paint()
 
         self.ap_ckb('log+vce', 'Calibration complete.')
 
@@ -2835,80 +2839,75 @@ class EDAutopilot:
             if res is False:
                 return False
 
-    def ctype_async_raise(self, thread_obj, exception):
-        """ Raising an exception to the engine loop thread, so we can terminate its execution
-        if thread was in a sleep, the exception seems to not be delivered
-        @param thread_obj:
-        @param exception:
-        @return:
-        """
-        found = False
-        target_tid = 0
-        for tid, tobj in threading._active.items():
-            if tobj is thread_obj:
-                found = True
-                target_tid = tid
-                break
-
-        if not found:
-            # Thread already exited, nothing to interrupt
-            return
-
-        ret = ctypes.pythonapi.PyThreadState_SetAsyncExc(ctypes.c_long(target_tid),
-                                                         ctypes.py_object(exception))
-        # ref: http://docs.python.org/c-api/init.html#PyThreadState_SetAsyncExc
-        if ret == 0:
-            raise ValueError("Invalid thread ID")
-        elif ret > 1:
-            # Huh? Why would we notify more than one threads?
-            # Because we punch a hole into C level interpreter.
-            # So it is better to clean up the mess.
-            ctypes.pythonapi.PyThreadState_SetAsyncExc(target_tid, 0)
-            raise SystemError("PyThreadState_SetAsyncExc failed")
-
     #
     # Setter routines for state variables
     #
+    def raise_if_stop_requested(self):
+        if self.stop_event.is_set():
+            raise InterruptedError("EDAP assist stop requested")
+
+    def _request_assist_stop(self):
+        self.stop_event.set()
+        self.keys.release_all_keys()
+
+    def request_stop_all(self):
+        """Cooperatively stop all activities without touching Tk widgets."""
+        self._request_assist_stop()
+        self.fsd_assist_enabled = False
+        self.sc_assist_enabled = False
+        self.waypoint_assist_enabled = False
+        self.robigo_assist_enabled = False
+        self.afk_combat_assist_enabled = False
+        self.dss_assist_enabled = False
+        self.single_waypoint_enabled = False
+
     def set_fsd_assist(self, enable=True):
         if not enable and self.fsd_assist_enabled:
-            if self.ap_thread is not None and self.ap_thread.is_alive():
-                self.ctype_async_raise(self.ap_thread, EDAP_Interrupt)
+            self._request_assist_stop()
+        elif enable:
+            self.stop_event.clear()
         self.fsd_assist_enabled = enable
 
     def set_sc_assist(self, enable=True):
         if not enable and self.sc_assist_enabled:
-            if self.ap_thread is not None and self.ap_thread.is_alive():
-                self.ctype_async_raise(self.ap_thread, EDAP_Interrupt)
+            self._request_assist_stop()
+        elif enable:
+            self.stop_event.clear()
         self.sc_assist_enabled = enable
 
     def set_waypoint_assist(self, enable=True):
         if not enable and self.waypoint_assist_enabled:
-            if self.ap_thread is not None and self.ap_thread.is_alive():
-                self.ctype_async_raise(self.ap_thread, EDAP_Interrupt)
+            self._request_assist_stop()
+        elif enable:
+            self.stop_event.clear()
         self.waypoint_assist_enabled = enable
 
     def set_robigo_assist(self, enable=True):
         if not enable and self.robigo_assist_enabled:
-            if self.ap_thread is not None and self.ap_thread.is_alive():
-                self.ctype_async_raise(self.ap_thread, EDAP_Interrupt)
+            self._request_assist_stop()
+        elif enable:
+            self.stop_event.clear()
         self.robigo_assist_enabled = enable
 
     def set_afk_combat_assist(self, enable=True):
         if not enable and self.afk_combat_assist_enabled:
-            if self.ap_thread is not None and self.ap_thread.is_alive():
-                self.ctype_async_raise(self.ap_thread, EDAP_Interrupt)
+            self._request_assist_stop()
+        elif enable:
+            self.stop_event.clear()
         self.afk_combat_assist_enabled = enable
 
     def set_dss_assist(self, enable=True):
         if not enable and self.dss_assist_enabled:
-            if self.ap_thread is not None and self.ap_thread.is_alive():
-                self.ctype_async_raise(self.ap_thread, EDAP_Interrupt)
+            self._request_assist_stop()
+        elif enable:
+            self.stop_event.clear()
         self.dss_assist_enabled = enable
 
     def set_single_waypoint_assist(self, system: str, station: str, enable=True):
         if not enable and self.single_waypoint_enabled:
-            if self.ap_thread is not None and self.ap_thread.is_alive():
-                self.ctype_async_raise(self.ap_thread, EDAP_Interrupt)
+            self._request_assist_stop()
+        elif enable:
+            self.stop_event.clear()
         self._single_waypoint_system = system
         self._single_waypoint_station = station
         self.single_waypoint_enabled = enable
@@ -2970,7 +2969,7 @@ class EDAutopilot:
         hang on exit have then kill python exec.
         @return:
         """
-        self.keys.release_all_keys()
+        self.request_stop_all()
         if self.vce != None:
             self.vce.quit()
         if self.overlay != None:
@@ -3015,7 +3014,7 @@ class EDAutopilot:
                 # could be deep in call tree when user disables FSD, so need to trap that exception
                 try:
                     fin = self.fsd_assist(self.scrReg)
-                except EDAP_Interrupt:
+                except (EDAP_Interrupt, InterruptedError):
                     logger.debug("Caught stop exception")
                     self.keys.release_all_keys()
                 except Exception as e:
@@ -3025,6 +3024,7 @@ class EDAutopilot:
 
                 self.stop_sco_monitoring()
                 self.fsd_assist_enabled = False
+                self.stop_event.clear()
                 self.ap_ckb('fsd_stop')
                 self.update_overlay()
 
@@ -3046,7 +3046,7 @@ class EDAutopilot:
                 try:
                     self.update_ap_status("SC to Target")
                     self.sc_assist(self.scrReg)
-                except EDAP_Interrupt:
+                except (EDAP_Interrupt, InterruptedError):
                     logger.debug("Caught stop exception")
                     self.keys.release_all_keys()
                 except Exception as e:
@@ -3057,6 +3057,7 @@ class EDAutopilot:
                 self.stop_sco_monitoring()
                 logger.debug("Completed sc_assist")
                 self.sc_assist_enabled = False
+                self.stop_event.clear()
                 self.ap_ckb('sc_stop')
                 self.update_overlay()
 
@@ -3071,7 +3072,7 @@ class EDAutopilot:
                 self.total_jumps = 0
                 try:
                     self.waypoint_assist(self.keys, self.scrReg)
-                except EDAP_Interrupt:
+                except (EDAP_Interrupt, InterruptedError):
                     logger.debug("Caught stop exception")
                     self.keys.release_all_keys()
                 except Exception as e:
@@ -3081,6 +3082,7 @@ class EDAutopilot:
 
                 self.stop_sco_monitoring()
                 self.waypoint_assist_enabled = False
+                self.stop_event.clear()
                 self.ap_ckb('waypoint_stop')
                 self.update_overlay()
 
@@ -3090,7 +3092,7 @@ class EDAutopilot:
                 self.update_overlay()
                 try:
                     self.robigo_assist()
-                except EDAP_Interrupt:
+                except (EDAP_Interrupt, InterruptedError):
                     logger.debug("Caught stop exception")
                     self.keys.release_all_keys()
                 except Exception as e:
@@ -3100,6 +3102,7 @@ class EDAutopilot:
 
                 self.stop_sco_monitoring()
                 self.robigo_assist_enabled = False
+                self.stop_event.clear()
                 self.ap_ckb('robigo_stop')
                 self.update_overlay()
 
@@ -3107,7 +3110,7 @@ class EDAutopilot:
                 self.update_overlay()
                 try:
                     self.afk_combat_loop()
-                except EDAP_Interrupt:
+                except (EDAP_Interrupt, InterruptedError):
                     logger.debug("Stopping afk_combat")
                     self.keys.release_all_keys()
                 except Exception as e:
@@ -3117,6 +3120,7 @@ class EDAutopilot:
 
                 self.stop_sco_monitoring()
                 self.afk_combat_assist_enabled = False
+                self.stop_event.clear()
                 self.ap_ckb('afk_stop')
                 self.update_overlay()
 
@@ -3126,7 +3130,7 @@ class EDAutopilot:
                 self.update_overlay()
                 try:
                     self.dss_assist()
-                except EDAP_Interrupt:
+                except (EDAP_Interrupt, InterruptedError):
                     logger.debug("Stopping DSS Assist")
                     self.keys.release_all_keys()
                 except Exception as e:
@@ -3135,6 +3139,7 @@ class EDAutopilot:
                     traceback.print_exc()
 
                 self.dss_assist_enabled = False
+                self.stop_event.clear()
                 self.ap_ckb('dss_stop')
                 self.update_overlay()
 
@@ -3142,7 +3147,7 @@ class EDAutopilot:
                 self.update_overlay()
                 try:
                     self.single_waypoint_assist()
-                except EDAP_Interrupt:
+                except (EDAP_Interrupt, InterruptedError):
                     logger.debug("Stopping Single Waypoint Assist")
                     self.keys.release_all_keys()
                 except Exception as e:
@@ -3152,6 +3157,7 @@ class EDAutopilot:
 
                 self.stop_sco_monitoring()
                 self.single_waypoint_enabled = False
+                self.stop_event.clear()
                 self.ap_ckb('single_waypoint_stop')
                 self.update_overlay()
 
@@ -3201,12 +3207,11 @@ class EDAutopilot:
                         self.templ.reload_templates(self.scr.scaleX, self.scr.scaleY)
 
             self.update_overlay()
-            cv2.waitKey(10)
-            # Catch EDAP_Interrupt raised while idle to prevent killing the engine loop
-            try:
-                sleep(1)
-            except EDAP_Interrupt:
-                logger.debug("EDAP_Interrupt caught in engine_loop idle")
+            if self.cv_view:
+                cv2.waitKey(10)
+            # New activities clear a previous stop request explicitly. Keeping
+            # it set here also lets a concurrent calibration worker observe it.
+            sleep(1)
 
     def set_throttle_0(self, repeat=1):
         if self.status.get_flag(FlagsSupercruise):

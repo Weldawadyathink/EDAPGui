@@ -1,15 +1,15 @@
-# import queue
 # import sys
 # import os
-# import threading
 # import kthread
-# from datetime import datetime
-# from time import sleep
 # import cv2
 # import json
 # from pathlib import Path
+from datetime import datetime
 import os
+import queue
 import subprocess
+import threading
+from time import sleep
 from typing import TypedDict
 
 import keyboard
@@ -20,7 +20,7 @@ import webbrowser
 # from PIL import Image, ImageGrab, ImageTk
 import tkinter as tk
 from tkinter import filedialog as fd
-# from tkinter import messagebox
+from tkinter import messagebox
 from tkinter import ttk
 import sv_ttk
 import pywinstyles
@@ -109,6 +109,10 @@ class APGui:
     def __init__(self, root):
         self.statusbar = None
         self.root = root
+        self._main_thread_id = threading.get_ident()
+        self._ui_queue = queue.Queue()
+        self._background_tasks = {}
+        self._closing = False
         root.title("EDAutopilot " + EDAP_VERSION)
         # root.overrideredirect(True)
         # root.geometry("400x550")
@@ -155,7 +159,6 @@ class APGui:
         }
 
         self.gui_loaded = False
-        self.log_buffer = queue.Queue()
         self.callback('log', f'Starting ED Autopilot {EDAP_VERSION}.')
 
         self.ed_ap = EDAutopilot(cb=self.callback)
@@ -264,15 +267,11 @@ class APGui:
         # Hotkeys
         self.setup_hotkeys()
 
-        # check for updates
-        self.check_updates()
-
-        sleep(0.25)  # Added because the custom tkinter takes longer to load? Without, you occasionally get errors
-        # that the main thread is not in main loop.
         self.ed_ap.gui_loaded = True
         self.gui_loaded = True
-        # Send a log entry which will flush out the buffer.
+        self.root.after(0, self._drain_ui_queue)
         self.callback('log', 'ED Autopilot loaded successfully.')
+        self._start_background_task('update check', self.check_updates, announce=False)
 
     def setup_hotkeys(self):
         """ Enable or disable hotkeys.
@@ -298,6 +297,23 @@ class APGui:
 
     # callback from the EDAP, to configure GUI items
     def callback(self, msg, body=None):
+        """Marshal every worker/hotkey callback onto Tk's main thread."""
+        if self._closing:
+            return
+        if self.gui_loaded and threading.get_ident() == self._main_thread_id:
+            self._dispatch_callback(msg, body)
+        else:
+            self._ui_queue.put((msg, body))
+
+    def _dispatch_callback(self, msg, body=None):
+        if msg == '_render_log':
+            self.msgList.insert(tk.END, body)
+            self.msgList.yview(tk.END)
+            return
+        if msg == '_task_finished':
+            self._background_tasks.pop(body, None)
+            return
+
         if msg == 'log':
             self.log_msg(body)
         elif msg == 'log+vce':
@@ -377,7 +393,7 @@ class APGui:
         elif msg == 'jumpcount':
             self.update_jumpcount(body)
         elif msg == 'update_ship_cfg':
-            self.root.after(0, self.update_ship_cfg)
+            self.update_ship_cfg()
         elif msg == 'load_waypoints':
             # TODO - Enable this at some point to auto load the previous waypoints on startup. Not called at the moment.
             self.waypoint_editor_tab.editor_load_waypoint_file(body)
@@ -406,6 +422,48 @@ class APGui:
                 self.ed_ap.keys.send('ResetPowerDistribution')
                 self.ed_ap.keys.send('IncreaseWeaponsPower', repeat=3)
 
+    def _drain_ui_queue(self):
+        """Process queued callbacks without allowing a log burst to starve Tk."""
+        if self._closing:
+            return
+        try:
+            for _ in range(200):
+                try:
+                    msg, body = self._ui_queue.get_nowait()
+                except queue.Empty:
+                    break
+                self._dispatch_callback(msg, body)
+        except tk.TclError:
+            return
+        self.root.after(50, self._drain_ui_queue)
+
+    def _start_background_task(self, name, target, announce=True):
+        """Run a blocking GUI command once, reporting failures in the UI log."""
+        existing = self._background_tasks.get(name)
+        if existing is not None and existing.is_alive():
+            self.log_msg(f"{name.title()} is already running")
+            return False
+
+        def runner():
+            try:
+                target()
+            except InterruptedError:
+                self.ed_ap.keys.release_all_keys()
+                self.log_msg(f"{name.title()} stopped")
+            except Exception as exc:
+                logger.exception(f"{name.title()} failed")
+                self.ed_ap.keys.release_all_keys()
+                self.log_msg(f"{name.title()} failed: {exc}")
+            finally:
+                self._ui_queue.put(('_task_finished', name))
+
+        if announce:
+            self.log_msg(f"{name.title()} started")
+        task = threading.Thread(target=runner, name=f"EDAP-{name}", daemon=True)
+        self._background_tasks[name] = task
+        task.start()
+        return True
+
     def update_ship_cfg(self):
         """
         Load up the display with what we read from ED_AP for the current ship.
@@ -420,23 +478,34 @@ class APGui:
             self.throttle_combo['values'] = self.throttle_keys
 
     def calibrate_callback(self):
-        self.ed_ap.calibrate_target()
+        msg = ('Select OK to begin Calibration. You must be in space and have '
+               'a star system targeted in center screen.')
+        self.ed_ap.vce.say(msg)
+        if messagebox.askokcancel('Calibration', msg):
+            self._start_background_task(
+                'target calibration',
+                lambda: self.ed_ap.calibrate_target(ask_confirmation=False),
+            )
 
     def quit(self):
         logger.debug("Entered: quit")
         self.close_window()
 
     def close_window(self):
+        if self._closing:
+            return
+        self._closing = True
         logger.debug("Entered: close_window")
-        self.stop_fsd()
-        self.stop_sc()
+        keyboard.remove_all_hotkeys()
         self.ed_ap.quit()
-        sleep(0.1)
-        self.root.destroy()
+        # Let the current Tk event finish before destroying the interpreter.
+        self.root.after_idle(self.root.destroy)
 
     # this routine is to stop any current autopilot activity
     def stop_all_assists(self):
         logger.debug("Entered: stop_all_assists")
+        self.log_msg("Stop requested")
+        self.ed_ap.request_stop_all()
         self.callback('stop_all_assists')
 
     def start_fsd(self):
@@ -606,24 +675,12 @@ class APGui:
 
     def log_msg(self, msg):
         message = datetime.now().strftime("%H:%M:%S: ") + msg
-
-        try:
-            if not self.gui_loaded:
-                # Store message in queue
-                self.log_buffer.put(message)
-                logger.info(msg)
-            else:
-                # Add queued messages to the list
-                while not self.log_buffer.empty():
-                    self.msgList.insert(tk.END, self.log_buffer.get())
-
-                self.msgList.insert(tk.END, message)
-                self.msgList.yview(tk.END)
-                logger.info(msg)
-        except:
-            # Store message in queue
-            self.log_buffer.put(message)
-            logger.info(msg)
+        logger.info(msg)
+        if self.gui_loaded and threading.get_ident() == self._main_thread_id:
+            self.msgList.insert(tk.END, message)
+            self.msgList.yview(tk.END)
+        else:
+            self._ui_queue.put(('_render_log', message))
 
     def set_statusbar(self, txt):
         self.statusbar.configure(text=txt)
@@ -700,7 +757,11 @@ class APGui:
         Aligns to the target for tuning.
         @return: N/A
         """
-        self.ed_ap.compass_align(self.ed_ap.scrReg)
+        self.ed_ap.stop_event.clear()
+        self._start_background_task(
+            'align to target',
+            lambda: self.ed_ap.compass_align(self.ed_ap.scrReg),
+        )
 
     def save_settings(self):
         self.entry_update(None)

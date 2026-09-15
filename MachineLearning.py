@@ -57,11 +57,16 @@ class MachLearn:
         """
         results = None
         matches: list[MachLearnMatch] = []
+        self.ap.raise_if_stop_requested()
         # Do prediction with ML
         if model is ModelType.Compass:
             results = self.compass_ml_model.predict(image, verbose=False)  # Predict on an image
         elif model is model.Target:
             results = self.target_ml_model.predict(image, verbose=False)  # Predict on an image
+
+        # Native inference cannot be cancelled safely, so reject its result as
+        # soon as it returns if the user requested a stop meanwhile.
+        self.ap.raise_if_stop_requested()
 
         if results and len(results) == 1:
             r = results[0]
