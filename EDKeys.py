@@ -6,7 +6,7 @@ import os
 from os.path import getmtime, isfile, join
 from time import sleep
 from typing import Any, final
-from xml.etree.ElementTree import parse
+from xml.etree.ElementTree import ParseError, parse
 
 import win32gui
 import xmltodict
@@ -234,7 +234,6 @@ class EDKeys:
                         ret.append(f"{key} (Secondary)")
         return " and ".join(ret)
 
-    # Note:  this routine will grab the *.binds file which is the latest modified
     def get_latest_keybinds(self):
         path_bindings = environ['LOCALAPPDATA'] + r"\Frontier Developments\Elite Dangerous\Options\Bindings"
         try:
@@ -245,8 +244,43 @@ class EDKeys:
 
         if not list_of_bindings:
             return None
+
+        # StartPreset names the active preset but not its schema version.
+        # Prefer the highest-version file for that preset; Elite can touch an
+        # older 4.2 file after the active 4.4 file, making mtime unreliable.
+        active_preset = None
+        start_preset = join(path_bindings, 'StartPreset.4.start')
+        try:
+            with open(start_preset, 'r', encoding='utf-8-sig') as preset_file:
+                active_preset = next(
+                    (line.strip() for line in preset_file if line.strip()), None)
+        except (OSError, UnicodeError):
+            logger.warning(f'Unable to read active keybindings preset:{start_preset}')
+
+        candidates = []
+        if active_preset:
+            for bindings_file in list_of_bindings:
+                try:
+                    root = parse(bindings_file).getroot()
+                    if root.attrib.get('PresetName') != active_preset:
+                        continue
+                    version = (
+                        int(root.attrib.get('MajorVersion', 0)),
+                        int(root.attrib.get('MinorVersion', 0)),
+                        getmtime(bindings_file),
+                        bindings_file,
+                    )
+                    candidates.append(version)
+                except (OSError, ParseError, ValueError):
+                    logger.warning(f'Unable to inspect keybindings file:{bindings_file}')
+
+        if candidates:
+            latest_bindings = max(candidates)[3]
+            logger.info(f'Active keybindings file:{latest_bindings}')
+            return latest_bindings
+
         latest_bindings = max(list_of_bindings, key=getmtime)
-        logger.info(f'Latest keybindings file:{latest_bindings}')
+        logger.info(f'Latest keybindings file (active preset unavailable):{latest_bindings}')
         return latest_bindings
 
     def send_key(self, type, key):

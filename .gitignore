@@ -3,7 +3,7 @@ __pycache__/
 /hold
 /notes
 /tst
-/autopilot.log
+/autopilot*.log
 /templates/images
 /dist
 /build
@@ -14,6 +14,7 @@ __pycache__/
 /screen/old-screen_cap.png
 /templates/bck
 /configs/AP.json
+/configs/Ultralytics/
 /EDAPGui.exe
 .idea/
 EDMesg/__pycache__/
